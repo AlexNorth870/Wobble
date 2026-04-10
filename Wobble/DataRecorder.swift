@@ -5,6 +5,7 @@ import CoreMotion
 class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var isRecording = false
     @Published var lastSavedFilename: String?
+    @Published var currentSpeedMps: Double = 0
 
     private let locationManager = CLLocationManager()
     private let motionManager = CMMotionManager()
@@ -58,7 +59,14 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         isRecording = true
 
         recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            self?.recordDataPoint()
+            guard let self else { return }
+            self.recordDataPoint()
+            // Update speed display every second after 10s have elapsed
+            let elapsed = Date().timeIntervalSince(self.startDate ?? Date())
+            if elapsed >= 10, Int(elapsed * 10) % 10 == 0 {
+                let speed = max(self.currentLocation?.speed ?? 0, 0)
+                DispatchQueue.main.async { self.currentSpeedMps = speed }
+            }
         }
     }
 
@@ -68,6 +76,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         recordingTimer = nil
         locationManager.stopUpdatingLocation()
         motionManager.stopDeviceMotionUpdates()
+        currentSpeedMps = 0
         saveCSV()
     }
 

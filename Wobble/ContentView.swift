@@ -13,6 +13,21 @@ struct ContentView: View {
                 .font(.system(size: 72, weight: .thin, design: .monospaced))
                 .foregroundColor(.primary)
 
+            if recorder.isRecording && elapsedTime >= 10 {
+                VStack(spacing: 4) {
+                    Text(paceString(from: recorder.currentSpeedMps))
+                        .font(.system(size: 48, weight: .light, design: .monospaced))
+                        .foregroundColor(.primary)
+                    Text("min/500m")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            } else if recorder.isRecording {
+                Text("--:--")
+                    .font(.system(size: 48, weight: .light, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+
             Button(action: toggleRecording) {
                 Text(recorder.isRecording ? "Stop" : "Start")
                     .font(.system(size: 28, weight: .semibold))
@@ -58,6 +73,14 @@ struct ContentView: View {
                 elapsedTime += 0.01
             }
         }
+    }
+
+    private func paceString(from speedMps: Double) -> String {
+        guard speedMps > 0.1 else { return "--:--" }
+        let secondsPer500m = 500.0 / speedMps
+        let minutes = Int(secondsPer500m) / 60
+        let seconds = Int(secondsPer500m) % 60
+        return String(format: "%d:%02d", minutes, seconds)
     }
 
     private func timeString(from interval: TimeInterval) -> String {
