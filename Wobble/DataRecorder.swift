@@ -6,6 +6,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var isRecording = false
     @Published var lastSavedFilename: String?
     @Published var currentSpeedMps: Double = 0
+    @Published var wobbleFactor: Double = 0
 
     private let locationManager = CLLocationManager()
     private let motionManager = CMMotionManager()
@@ -15,6 +16,9 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var recordingTimer: Timer?
     private var csvRows: [String] = []
     private var currentLocation: CLLocation?
+    // 10 seconds at 0.1s intervals = 100 samples
+    private var rotationMagnitudeBuffer: [Double] = []
+    private let wobbleBufferSize = 100
 
     override init() {
         super.init()
@@ -27,6 +31,8 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         startDate = Date()
         lastSavedFilename = nil
         csvRows = []
+        rotationMagnitudeBuffer = []
+        wobbleFactor = 0
         csvRows.append(
             "stopwatch_time_s," +
             "timestamp," +
@@ -47,7 +53,8 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             "gravity_z_g," +
             "rotation_rate_x_rads," +
             "rotation_rate_y_rads," +
-            "rotation_rate_z_rads"
+            "rotation_rate_z_rads," +
+            "wobble_factor_deg"
         )
 
         locationManager.startUpdatingLocation()
@@ -78,6 +85,8 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         locationManager.stopUpdatingLocation()
         motionManager.stopDeviceMotionUpdates()
         currentSpeedMps = 0
+        wobbleFactor = 0
+        rotationMagnitudeBuffer = []
         saveCSV()
     }
 
@@ -115,14 +124,25 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
 
         let pace = speed > 0.1 ? (500.0 / speed) / 60.0 : 0.0
 
+        // Wobble factor: rolling 10s average of rotation rate magnitude
+        let magnitude = sqrt(gx * gx + gy * gy + gz * gz)
+        rotationMagnitudeBuffer.append(magnitude)
+        if rotationMagnitudeBuffer.count > wobbleBufferSize {
+            rotationMagnitudeBuffer.removeFirst()
+        }
+        let avgMagnitudeRads = rotationMagnitudeBuffer.reduce(0, +) / Double(rotationMagnitudeBuffer.count)
+        let currentWobble = (avgMagnitudeRads * 180.0 / .pi).rounded()
+        DispatchQueue.main.async { self.wobbleFactor = currentWobble }
+
         let row = String(
-            format: "%.3f,%@,%.8f,%.8f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f",
+            format: "%.3f,%@,%.8f,%.8f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.4f",
             elapsed, timestamp,
             lat, lon, alt, speed, pace, course,
             pitch, roll, yaw,
             ax, ay, az,
             gravX, gravY, gravZ,
-            gx, gy, gz
+            gx, gy, gz,
+            currentWobble
         )
         csvRows.append(row)
     }

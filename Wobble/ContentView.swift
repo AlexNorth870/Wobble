@@ -28,6 +28,17 @@ struct ContentView: View {
                     .foregroundColor(.secondary)
             }
 
+            if recorder.isRecording {
+                VStack(spacing: 4) {
+                    Text(String(format: "%.0f°", recorder.wobbleFactor))
+                        .font(.system(size: 36, weight: .light, design: .monospaced))
+                        .foregroundColor(.orange)
+                    Text("Wobble Factor")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
             Button(action: toggleRecording) {
                 Text(recorder.isRecording ? "Stop" : "Start")
                     .font(.system(size: 28, weight: .semibold))
