@@ -34,6 +34,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             "longitude_deg," +
             "altitude_m," +
             "speed_mps," +
+            "pace_min_per_500m," +
             "course_deg," +
             "pitch_rad," +
             "roll_rad," +
@@ -112,10 +113,12 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             gz    = motion.rotationRate.z
         }
 
+        let pace = speed > 0.1 ? (500.0 / speed) / 60.0 : 0.0
+
         let row = String(
-            format: "%.3f,%@,%.8f,%.8f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f",
+            format: "%.3f,%@,%.8f,%.8f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f",
             elapsed, timestamp,
-            lat, lon, alt, speed, course,
+            lat, lon, alt, speed, pace, course,
             pitch, roll, yaw,
             ax, ay, az,
             gravX, gravY, gravZ,
