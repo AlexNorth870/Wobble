@@ -31,8 +31,8 @@ struct ContentView: View {
             if recorder.isRecording {
                 VStack(spacing: 4) {
                     Text(String(format: "%.0f°", recorder.wobbleFactor))
-                        .font(.system(size: 36, weight: .light, design: .monospaced))
-                        .foregroundColor(.orange)
+                        .font(.system(size: 56, weight: .light, design: .monospaced))
+                        .foregroundColor(.red)
                     Text("Wobble Factor")
                         .font(.caption)
                         .foregroundColor(.secondary)
