@@ -39,6 +39,17 @@ struct ContentView: View {
                 }
             }
 
+            if recorder.isRecording {
+                VStack(spacing: 4) {
+                    Text(recorder.strokeRate > 0 ? String(format: "%.1f", recorder.strokeRate) : "---")
+                        .font(.system(size: 48, weight: .light, design: .monospaced))
+                        .foregroundColor(.blue)
+                    Text("Stroke Rate (spm)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
             Button(action: toggleRecording) {
                 Text(recorder.isRecording ? "Stop" : "Start")
                     .font(.system(size: 28, weight: .semibold))

@@ -7,6 +7,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var lastSavedFilename: String?
     @Published var currentSpeedMps: Double = 0
     @Published var wobbleFactor: Double = 0
+    @Published var strokeRate: Double = 0
 
     private let locationManager = CLLocationManager()
     private let motionManager = CMMotionManager()
@@ -19,6 +20,11 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     // 10 seconds at 0.1s intervals = 100 samples
     private var rotationMagnitudeBuffer: [Double] = []
     private let wobbleBufferSize = 100
+    // Stroke rate autocorrelation
+    private var accelMagnitudeBuffer: [Double] = []
+    private let strokeBufferSize = 100
+    private let minStrokeLag = 15  // 40 spm = 1.5s = 15 samples
+    private let maxStrokeLag = 30  // 20 spm = 3.0s = 30 samples
 
     override init() {
         super.init()
@@ -32,7 +38,9 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         lastSavedFilename = nil
         csvRows = []
         rotationMagnitudeBuffer = []
+        accelMagnitudeBuffer = []
         wobbleFactor = 0
+        strokeRate = 0
         csvRows.append(
             "stopwatch_time_s," +
             "timestamp," +
@@ -54,7 +62,8 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             "rotation_rate_x_rads," +
             "rotation_rate_y_rads," +
             "rotation_rate_z_rads," +
-            "wobble_factor_deg"
+            "wobble_factor_deg," +
+            "stroke_rate_spm"
         )
 
         locationManager.startUpdatingLocation()
@@ -86,7 +95,9 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         motionManager.stopDeviceMotionUpdates()
         currentSpeedMps = 0
         wobbleFactor = 0
+        strokeRate = 0
         rotationMagnitudeBuffer = []
+        accelMagnitudeBuffer = []
         saveCSV()
     }
 
@@ -124,6 +135,15 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
 
         let pace = speed > 0.1 ? (500.0 / speed) / 60.0 : 0.0
 
+        // Stroke rate via autocorrelation of user acceleration magnitude
+        let accelMag = sqrt(ax * ax + ay * ay + az * az)
+        accelMagnitudeBuffer.append(accelMag)
+        if accelMagnitudeBuffer.count > strokeBufferSize {
+            accelMagnitudeBuffer.removeFirst()
+        }
+        let currentStrokeRate = computeStrokeRate()
+        DispatchQueue.main.async { self.strokeRate = currentStrokeRate }
+
         // Wobble factor: rolling 10s average of rotation rate magnitude
         let magnitude = sqrt(gx * gx + gy * gy + gz * gz)
         rotationMagnitudeBuffer.append(magnitude)
@@ -135,16 +155,50 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         DispatchQueue.main.async { self.wobbleFactor = currentWobble }
 
         let row = String(
-            format: "%.3f,%@,%.8f,%.8f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.4f",
+            format: "%.3f,%@,%.8f,%.8f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.4f,%.1f",
             elapsed, timestamp,
             lat, lon, alt, speed, pace, course,
             pitch, roll, yaw,
             ax, ay, az,
             gravX, gravY, gravZ,
             gx, gy, gz,
-            currentWobble
+            currentWobble,
+            currentStrokeRate
         )
         csvRows.append(row)
+    }
+
+    // MARK: - Stroke Rate
+
+    private func computeStrokeRate() -> Double {
+        let n = accelMagnitudeBuffer.count
+        guard n > maxStrokeLag else { return 0 }
+
+        // Subtract mean to center signal around zero
+        let mean = accelMagnitudeBuffer.reduce(0, +) / Double(n)
+        let centered = accelMagnitudeBuffer.map { $0 - mean }
+
+        // Autocorrelation: find lag with highest correlation in stroke rate range
+        var bestCorr = -Double.infinity
+        var bestLag = 0
+
+        for lag in minStrokeLag...maxStrokeLag {
+            guard lag < n else { continue }
+            var corr = 0.0
+            let count = n - lag
+            for i in 0..<count {
+                corr += centered[i] * centered[i + lag]
+            }
+            corr /= Double(count)
+            if corr > bestCorr {
+                bestCorr = corr
+                bestLag = lag
+            }
+        }
+
+        guard bestLag > 0 else { return 0 }
+        let periodSeconds = Double(bestLag) * 0.1
+        return 60.0 / periodSeconds
     }
 
     // MARK: - CLLocationManagerDelegate
