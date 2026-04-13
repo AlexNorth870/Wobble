@@ -1,6 +1,7 @@
 import Foundation
 import CoreLocation
 import CoreMotion
+import CloudKit
 
 class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var isRecording = false
@@ -12,6 +13,8 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     private let locationManager = CLLocationManager()
     private let motionManager = CMMotionManager()
     private let isoFormatter = ISO8601DateFormatter()
+    private let cloudDB = CKContainer(identifier: "iCloud.com.VT24NXHTS5.wobble").publicCloudDatabase
+    private var pendingRecords: [CKRecord] = []
 
     private let userUUID: String = {
         if let existing = UserDefaults.standard.string(forKey: "wobble_user_uuid") {
@@ -50,6 +53,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         accelMagnitudeBuffer = []
         wobbleFactor = 0
         strokeRate = 0
+        pendingRecords = []
         csvRows.append(
             "user_uuid," +
             "stopwatch_time_s," +
@@ -109,6 +113,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         rotationMagnitudeBuffer = []
         accelMagnitudeBuffer = []
         saveCSV()
+        uploadToCloudKit()
     }
 
     private func recordDataPoint() {
@@ -176,6 +181,60 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             currentStrokeRate
         )
         csvRows.append(row)
+
+        // Build CloudKit record for this data point
+        let record = CKRecord(recordType: "WobbleDataPoint")
+        record["userUUID"]            = userUUID
+        record["timestamp"]           = Date()
+        record["stopwatchTime"]       = elapsed
+        record["latitude"]            = lat
+        record["longitude"]           = lon
+        record["altitude"]            = alt
+        record["speedMps"]            = speed
+        record["paceMinPer500m"]      = pace
+        record["courseDeg"]           = course
+        record["pitchRad"]            = pitch
+        record["rollRad"]             = roll
+        record["yawRad"]              = yaw
+        record["userAccelX"]          = ax
+        record["userAccelY"]          = ay
+        record["userAccelZ"]          = az
+        record["gravityX"]            = gravX
+        record["gravityY"]            = gravY
+        record["gravityZ"]            = gravZ
+        record["rotationRateX"]       = gx
+        record["rotationRateY"]       = gy
+        record["rotationRateZ"]       = gz
+        record["wobbleFactorDeg"]     = currentWobble
+        record["strokeRateSpm"]       = currentStrokeRate
+        pendingRecords.append(record)
+    }
+
+    // MARK: - CloudKit Upload
+
+    private func uploadToCloudKit() {
+        guard !pendingRecords.isEmpty else { return }
+        let records = pendingRecords
+        pendingRecords = []
+
+        // CloudKit batch limit is 400 records per operation
+        let batches = stride(from: 0, to: records.count, by: 400).map {
+            Array(records[$0..<min($0 + 400, records.count)])
+        }
+
+        for batch in batches {
+            let operation = CKModifyRecordsOperation(recordsToSave: batch, recordIDsToDelete: nil)
+            operation.savePolicy = .allKeys
+            operation.modifyRecordsResultBlock = { result in
+                switch result {
+                case .success:
+                    print("WOBBLE: CloudKit batch uploaded \(batch.count) records")
+                case .failure(let error):
+                    print("WOBBLE: CloudKit upload error: \(error)")
+                }
+            }
+            cloudDB.add(operation)
+        }
     }
 
     // MARK: - Stroke Rate

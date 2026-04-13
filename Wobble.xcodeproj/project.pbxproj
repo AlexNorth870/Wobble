@@ -16,6 +16,7 @@
 /* Begin PBXFileReference section */
 		0F000000000000000000000F /* Wobble.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Wobble.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		186044162F87EEA7005C9622 /* Wobble.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Wobble.entitlements; sourceTree = "<group>"; };
+		186044172F8D9085005C9622 /* WobbleRelease.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WobbleRelease.entitlements; sourceTree = "<group>"; };
 		1A000000000000000000001A /* WobbleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WobbleApp.swift; sourceTree = "<group>"; };
 		1B000000000000000000001B /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		1C000000000000000000001C /* DataRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataRecorder.swift; sourceTree = "<group>"; };
@@ -53,6 +54,7 @@
 		DD000000000000000000000D /* Wobble */ = {
 			isa = PBXGroup;
 			children = (
+				186044172F8D9085005C9622 /* WobbleRelease.entitlements */,
 				186044162F87EEA7005C9622 /* Wobble.entitlements */,
 				1A000000000000000000001A /* WobbleApp.swift */,
 				1B000000000000000000001B /* ContentView.swift */,
@@ -148,7 +150,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Wobble/Wobble.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = VT24NXHTS5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -172,9 +174,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = Wobble/Wobble.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Wobble/WobbleRelease.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = VT24NXHTS5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
