@@ -13,6 +13,15 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     private let motionManager = CMMotionManager()
     private let isoFormatter = ISO8601DateFormatter()
 
+    private let userUUID: String = {
+        if let existing = UserDefaults.standard.string(forKey: "wobble_user_uuid") {
+            return existing
+        }
+        let new = UUID().uuidString
+        UserDefaults.standard.set(new, forKey: "wobble_user_uuid")
+        return new
+    }()
+
     private var startDate: Date?
     private var recordingTimer: Timer?
     private var csvRows: [String] = []
@@ -42,6 +51,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         wobbleFactor = 0
         strokeRate = 0
         csvRows.append(
+            "user_uuid," +
             "stopwatch_time_s," +
             "timestamp," +
             "latitude_deg," +
@@ -154,7 +164,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         let currentWobble = (avgMagnitudeRads * 180.0 / .pi).rounded()
         DispatchQueue.main.async { self.wobbleFactor = currentWobble }
 
-        let row = String(
+        let row = "\(userUUID)," + String(
             format: "%.3f,%@,%.8f,%.8f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.4f,%.1f",
             elapsed, timestamp,
             lat, lon, alt, speed, pace, course,
