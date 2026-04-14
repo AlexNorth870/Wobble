@@ -4,12 +4,29 @@ import CoreMotion
 import CloudKit
 import CryptoKit
 
+struct MinuteSummary {
+    let minute: Int
+    let avgPace: Double    // seconds per 500m (0 = no speed data)
+    let avgStrokeRate: Double
+    let avgWobble: Double
+}
+
 class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var isRecording = false
     @Published var lastSavedFilename: String?
     @Published var currentSpeedMps: Double = 0
     @Published var wobbleFactor: Double = 0
     @Published var strokeRate: Double = 0
+    @Published var sessionSummary: [MinuteSummary] = []
+    @Published var showingSummary = false
+
+    private struct DataPoint {
+        let elapsed: Double
+        let speed: Double
+        let strokeRate: Double
+        let wobble: Double
+    }
+    private var dataPoints: [DataPoint] = []
 
     private let locationManager = CLLocationManager()
     private let motionManager = CMMotionManager()
@@ -67,6 +84,9 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         wobbleFactor = 0
         strokeRate = 0
         pendingRecords = []
+        dataPoints = []
+        sessionSummary = []
+        showingSummary = false
         csvRows.append(
             "user_uuid," +
             "track," +
@@ -128,6 +148,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         accelMagnitudeBuffer = []
         saveCSV()
         uploadToCloudKit()
+        computeSessionSummary()
     }
 
     private func recordDataPoint() {
@@ -195,6 +216,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             currentStrokeRate
         )
         csvRows.append(row)
+        dataPoints.append(DataPoint(elapsed: elapsed, speed: speed, strokeRate: currentStrokeRate, wobble: currentWobble))
 
         // Build CloudKit record for this data point
         let record = CKRecord(recordType: "WobbleDataPoint")
@@ -223,6 +245,41 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         record["wobbleFactorDeg"]     = currentWobble
         record["strokeRateSpm"]       = currentStrokeRate
         pendingRecords.append(record)
+    }
+
+    // MARK: - Session Summary
+
+    private func computeSessionSummary() {
+        guard !dataPoints.isEmpty else { return }
+
+        // Group data points by minute (1-based)
+        var byMinute: [Int: [DataPoint]] = [:]
+        for point in dataPoints {
+            let minute = Int(point.elapsed / 60) + 1
+            byMinute[minute, default: []].append(point)
+        }
+
+        let minutes = byMinute.keys.sorted()
+        var summaries: [MinuteSummary] = minutes.map { minute in
+            let points = byMinute[minute]!
+            let avgSpeed = points.map { $0.speed }.reduce(0, +) / Double(points.count)
+            let avgPace = avgSpeed > 0.1 ? 500.0 / avgSpeed : 0
+            let avgStroke = points.map { $0.strokeRate }.reduce(0, +) / Double(points.count)
+            let avgWobble = points.map { $0.wobble }.reduce(0, +) / Double(points.count)
+            return MinuteSummary(minute: minute, avgPace: avgPace, avgStrokeRate: avgStroke, avgWobble: avgWobble)
+        }
+
+        // Whole session averages as final row (minute = 0 means "total")
+        let allSpeed = dataPoints.map { $0.speed }.reduce(0, +) / Double(dataPoints.count)
+        let allPace = allSpeed > 0.1 ? 500.0 / allSpeed : 0
+        let allStroke = dataPoints.map { $0.strokeRate }.reduce(0, +) / Double(dataPoints.count)
+        let allWobble = dataPoints.map { $0.wobble }.reduce(0, +) / Double(dataPoints.count)
+        summaries.append(MinuteSummary(minute: 0, avgPace: allPace, avgStrokeRate: allStroke, avgWobble: allWobble))
+
+        DispatchQueue.main.async {
+            self.sessionSummary = summaries
+            self.showingSummary = true
+        }
     }
 
     // MARK: - CloudKit Upload

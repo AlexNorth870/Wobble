@@ -91,6 +91,11 @@ struct ContentView: View {
         .sheet(isPresented: $showingAbout) {
             AboutView(shortUserID: recorder.shortUserID, appVersion: appVersion)
         }
+        .sheet(isPresented: $recorder.showingSummary) {
+            SessionSummaryView(summary: recorder.sessionSummary) {
+                recorder.showingSummary = false
+            }
+        }
         .onChange(of: recorder.isRecording) { recording in
             if recording {
                 previousBrightness = UIScreen.main.brightness
