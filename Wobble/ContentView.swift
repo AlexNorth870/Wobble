@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var elapsedTime: TimeInterval = 0
     @State private var displayTimer: Timer?
     @State private var showingAbout = false
+    @State private var previousBrightness: CGFloat = UIScreen.main.brightness
 
     var body: some View {
         VStack(spacing: 48) {
@@ -89,6 +90,14 @@ struct ContentView: View {
         .padding()
         .sheet(isPresented: $showingAbout) {
             AboutView(shortUserID: recorder.shortUserID, appVersion: appVersion)
+        }
+        .onChange(of: recorder.isRecording) { recording in
+            if recording {
+                previousBrightness = UIScreen.main.brightness
+                UIScreen.main.brightness = 1.0
+            } else {
+                UIScreen.main.brightness = previousBrightness
+            }
         }
     }
 
