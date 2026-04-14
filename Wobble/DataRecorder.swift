@@ -33,6 +33,9 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         return hash.compactMap { String(format: "%02x", $0) }.joined().prefix(8).uppercased()
     }()
 
+    // Track number — increments each time Start is pressed, persists across app restarts
+    private(set) var trackNumber: Int = UserDefaults.standard.integer(forKey: "wobble_track_number")
+
     private var startDate: Date?
     private var recordingTimer: Timer?
     private var csvRows: [String] = []
@@ -54,6 +57,8 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     func start() {
+        trackNumber += 1
+        UserDefaults.standard.set(trackNumber, forKey: "wobble_track_number")
         startDate = Date()
         lastSavedFilename = nil
         csvRows = []
@@ -64,6 +69,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         pendingRecords = []
         csvRows.append(
             "user_uuid," +
+            "track," +
             "stopwatch_time_s," +
             "timestamp," +
             "latitude_deg," +
@@ -177,7 +183,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         let currentWobble = (avgMagnitudeRads * 180.0 / .pi).rounded()
         DispatchQueue.main.async { self.wobbleFactor = currentWobble }
 
-        let row = "\(shortUserID)," + String(
+        let row = "\(shortUserID),\(trackNumber)," + String(
             format: "%.3f,%@,%.8f,%.8f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.4f,%.1f",
             elapsed, timestamp,
             lat, lon, alt, speed, pace, course,
@@ -193,6 +199,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         // Build CloudKit record for this data point
         let record = CKRecord(recordType: "WobbleDataPoint")
         record["userUUID"]            = shortUserID
+        record["track"]               = trackNumber
         record["timestamp"]           = Date()
         record["stopwatchTime"]       = elapsed
         record["latitude"]            = lat
@@ -250,6 +257,10 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     private func computeStrokeRate() -> Double {
         let n = accelMagnitudeBuffer.count
         guard n > maxStrokeLag else { return 0 }
+
+        // Only calculate if the last 10 samples all exceed the activity threshold
+        let recentSamples = accelMagnitudeBuffer.suffix(10)
+        guard recentSamples.count == 10, recentSamples.allSatisfy({ $0 > 0.20 }) else { return 0 }
 
         // Subtract mean to center signal around zero
         let mean = accelMagnitudeBuffer.reduce(0, +) / Double(n)
