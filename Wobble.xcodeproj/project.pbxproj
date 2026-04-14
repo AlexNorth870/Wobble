@@ -10,6 +10,7 @@
 		2A000000000000000000002A /* WobbleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000000000000000000001A /* WobbleApp.swift */; };
 		2B000000000000000000002B /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B000000000000000000001B /* ContentView.swift */; };
 		2C000000000000000000002C /* DataRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C000000000000000000001C /* DataRecorder.swift */; };
+		2E000000000000000000002E /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F000000000000000000001F /* AboutView.swift */; };
 		2D000000000000000000002D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1E000000000000000000001E /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -20,6 +21,7 @@
 		1A000000000000000000001A /* WobbleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WobbleApp.swift; sourceTree = "<group>"; };
 		1B000000000000000000001B /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		1C000000000000000000001C /* DataRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataRecorder.swift; sourceTree = "<group>"; };
+		1F000000000000000000001F /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
 		1D000000000000000000001D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		1E000000000000000000001E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -59,6 +61,7 @@
 				1A000000000000000000001A /* WobbleApp.swift */,
 				1B000000000000000000001B /* ContentView.swift */,
 				1C000000000000000000001C /* DataRecorder.swift */,
+				1F000000000000000000001F /* AboutView.swift */,
 				1E000000000000000000001E /* Assets.xcassets */,
 				1D000000000000000000001D /* Info.plist */,
 			);
@@ -137,6 +140,7 @@
 				2A000000000000000000002A /* WobbleApp.swift in Sources */,
 				2B000000000000000000002B /* ContentView.swift in Sources */,
 				2C000000000000000000002C /* DataRecorder.swift in Sources */,
+				2E000000000000000000002E /* AboutView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -150,7 +154,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Wobble/Wobble.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = VT24NXHTS5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -176,7 +180,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Wobble/WobbleRelease.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = VT24NXHTS5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;

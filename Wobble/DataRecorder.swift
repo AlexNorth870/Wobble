@@ -2,6 +2,7 @@ import Foundation
 import CoreLocation
 import CoreMotion
 import CloudKit
+import CryptoKit
 
 class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var isRecording = false
@@ -23,6 +24,13 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         let new = UUID().uuidString
         UserDefaults.standard.set(new, forKey: "wobble_user_uuid")
         return new
+    }()
+
+    // 8-character SHA256 hash of the UUID for display and CSV
+    let shortUserID: String = {
+        let raw = UserDefaults.standard.string(forKey: "wobble_user_uuid") ?? UUID().uuidString
+        let hash = SHA256.hash(data: Data(raw.utf8))
+        return hash.compactMap { String(format: "%02x", $0) }.joined().prefix(8).uppercased()
     }()
 
     private var startDate: Date?
@@ -169,7 +177,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         let currentWobble = (avgMagnitudeRads * 180.0 / .pi).rounded()
         DispatchQueue.main.async { self.wobbleFactor = currentWobble }
 
-        let row = "\(userUUID)," + String(
+        let row = "\(shortUserID)," + String(
             format: "%.3f,%@,%.8f,%.8f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.4f,%.1f",
             elapsed, timestamp,
             lat, lon, alt, speed, pace, course,
@@ -184,7 +192,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
 
         // Build CloudKit record for this data point
         let record = CKRecord(recordType: "WobbleDataPoint")
-        record["userUUID"]            = userUUID
+        record["userUUID"]            = shortUserID
         record["timestamp"]           = Date()
         record["stopwatchTime"]       = elapsed
         record["latitude"]            = lat

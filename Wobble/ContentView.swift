@@ -4,9 +4,21 @@ struct ContentView: View {
     @StateObject private var recorder = DataRecorder()
     @State private var elapsedTime: TimeInterval = 0
     @State private var displayTimer: Timer?
+    @State private var showingAbout = false
 
     var body: some View {
         VStack(spacing: 48) {
+            HStack {
+                Spacer()
+                Button(action: { showingAbout = true }) {
+                    Image(systemName: "info.circle")
+                        .font(.title2)
+                        .foregroundColor(.blue)
+                }
+                .padding(.trailing)
+            }
+            .padding(.top)
+
             Spacer()
 
             Text(timeString(from: elapsedTime))
@@ -75,6 +87,9 @@ struct ContentView: View {
                 .foregroundColor(.secondary)
         }
         .padding()
+        .sheet(isPresented: $showingAbout) {
+            AboutView(shortUserID: recorder.shortUserID, appVersion: appVersion)
+        }
     }
 
     private var appVersion: String {
