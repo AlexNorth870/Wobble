@@ -317,7 +317,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
 
         // Only calculate if the last 10 samples all exceed the activity threshold
         let recentSamples = accelMagnitudeBuffer.suffix(10)
-        guard recentSamples.count == 10, recentSamples.allSatisfy({ $0 > 0.20 }) else { return 0 }
+        guard recentSamples.count == 10, recentSamples.allSatisfy({ $0 > 0.15 }) else { return 0 }
 
         // Subtract mean to center signal around zero
         let mean = accelMagnitudeBuffer.reduce(0, +) / Double(n)
