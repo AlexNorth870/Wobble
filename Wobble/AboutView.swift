@@ -68,6 +68,13 @@ struct AboutView: View {
                             .foregroundColor(.secondary)
                     }
 
+                    Divider()
+
+                    Text("© 2026 Alex North")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+
                     Spacer(minLength: 40)
                 }
                 .padding()
