@@ -11,16 +11,19 @@ struct SessionSummaryView: View {
                 // Header row
                 HStack {
                     Text("Min")
-                        .frame(width: 44, alignment: .leading)
+                        .frame(width: 40, alignment: .leading)
                     Spacer()
                     Text("Pace")
-                        .frame(width: 72, alignment: .trailing)
+                        .frame(width: 62, alignment: .trailing)
                     Spacer()
                     Text("Stroke")
-                        .frame(width: 72, alignment: .trailing)
+                        .frame(width: 58, alignment: .trailing)
                     Spacer()
                     Text("Wobble")
-                        .frame(width: 72, alignment: .trailing)
+                        .frame(width: 58, alignment: .trailing)
+                    Spacer()
+                    Text("Dist")
+                        .frame(width: 58, alignment: .trailing)
                 }
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -29,26 +32,30 @@ struct SessionSummaryView: View {
 
                 Divider()
 
-                // Per-minute rows + session average
+                // Per-minute rows + session total
                 ScrollView {
                     VStack(spacing: 0) {
                         ForEach(summary, id: \.minute) { row in
                             let isTotal = row.minute == 0
                             HStack {
-                                Text(isTotal ? "Avg" : "\(row.minute)")
-                                    .frame(width: 44, alignment: .leading)
+                                Text(isTotal ? "Tot" : "\(row.minute)")
+                                    .frame(width: 40, alignment: .leading)
                                     .bold(isTotal)
                                 Spacer()
                                 Text(paceString(row.avgPace))
-                                    .frame(width: 72, alignment: .trailing)
+                                    .frame(width: 62, alignment: .trailing)
                                     .bold(isTotal)
                                 Spacer()
                                 Text(row.avgStrokeRate > 0 ? String(format: "%.1f", row.avgStrokeRate) : "---")
-                                    .frame(width: 72, alignment: .trailing)
+                                    .frame(width: 58, alignment: .trailing)
                                     .bold(isTotal)
                                 Spacer()
                                 Text(String(format: "%.0f°", row.avgWobble))
-                                    .frame(width: 72, alignment: .trailing)
+                                    .frame(width: 58, alignment: .trailing)
+                                    .bold(isTotal)
+                                Spacer()
+                                Text(distanceString(row.distanceM))
+                                    .frame(width: 58, alignment: .trailing)
                                     .bold(isTotal)
                             }
                             .font(.system(.body, design: .monospaced))
@@ -77,5 +84,10 @@ struct SessionSummaryView: View {
         let minutes = Int(secondsPer500m) / 60
         let seconds = Int(secondsPer500m) % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    private func distanceString(_ meters: Double) -> String {
+        guard meters > 0 else { return "---" }
+        return "\(Int(meters.rounded()))m"
     }
 }

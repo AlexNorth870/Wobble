@@ -9,6 +9,7 @@ struct MinuteSummary {
     let avgPace: Double    // seconds per 500m (0 = no speed data)
     let avgStrokeRate: Double
     let avgWobble: Double
+    let distanceM: Double  // total meters this minute (or full session when minute == 0)
 }
 
 class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
@@ -17,6 +18,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var currentSpeedMps: Double = 0
     @Published var wobbleFactor: Double = 0
     @Published var strokeRate: Double = 0
+    @Published var distanceTravelled: Double = 0
     @Published var sessionSummary: [MinuteSummary] = []
     @Published var showingSummary = false
 
@@ -25,6 +27,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         let speed: Double
         let strokeRate: Double
         let wobble: Double
+        let distanceM: Double  // incremental distance this sample (speed * 0.1)
     }
     private var dataPoints: [DataPoint] = []
 
@@ -83,6 +86,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         accelMagnitudeBuffer = []
         wobbleFactor = 0
         strokeRate = 0
+        distanceTravelled = 0
         pendingRecords = []
         dataPoints = []
         sessionSummary = []
@@ -111,7 +115,8 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             "rotation_rate_y_rads," +
             "rotation_rate_z_rads," +
             "wobble_factor_deg," +
-            "stroke_rate_spm"
+            "stroke_rate_spm," +
+            "distance_cumulative_m"
         )
 
         locationManager.startUpdatingLocation()
@@ -185,6 +190,10 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
 
         let pace = speed > 0.1 ? (500.0 / speed) / 60.0 : 0.0
 
+        // Accumulate distance: velocity × sample interval (0.1 s)
+        let sampleDistance = speed * 0.1
+        distanceTravelled += sampleDistance
+
         // Stroke rate via autocorrelation of user acceleration magnitude
         let accelMag = sqrt(ax * ax + ay * ay + az * az)
         accelMagnitudeBuffer.append(accelMag)
@@ -205,7 +214,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         DispatchQueue.main.async { self.wobbleFactor = currentWobble }
 
         let row = "\(shortUserID),\(trackNumber)," + String(
-            format: "%.3f,%@,%.8f,%.8f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.4f,%.1f",
+            format: "%.3f,%@,%.8f,%.8f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.4f,%.1f,%.2f",
             elapsed, timestamp,
             lat, lon, alt, speed, pace, course,
             pitch, roll, yaw,
@@ -213,10 +222,11 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             gravX, gravY, gravZ,
             gx, gy, gz,
             currentWobble,
-            currentStrokeRate
+            currentStrokeRate,
+            distanceTravelled
         )
         csvRows.append(row)
-        dataPoints.append(DataPoint(elapsed: elapsed, speed: speed, strokeRate: currentStrokeRate, wobble: currentWobble))
+        dataPoints.append(DataPoint(elapsed: elapsed, speed: speed, strokeRate: currentStrokeRate, wobble: currentWobble, distanceM: sampleDistance))
 
         // Build CloudKit record for this data point
         let record = CKRecord(recordType: "WobbleDataPoint")
@@ -244,6 +254,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         record["rotationRateZ"]       = gz
         record["wobbleFactorDeg"]     = currentWobble
         record["strokeRateSpm"]       = currentStrokeRate
+        record["distanceCumulativeM"] = distanceTravelled
         pendingRecords.append(record)
     }
 
@@ -266,15 +277,17 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             let avgPace = avgSpeed > 0.1 ? 500.0 / avgSpeed : 0
             let avgStroke = points.map { $0.strokeRate }.reduce(0, +) / Double(points.count)
             let avgWobble = points.map { $0.wobble }.reduce(0, +) / Double(points.count)
-            return MinuteSummary(minute: minute, avgPace: avgPace, avgStrokeRate: avgStroke, avgWobble: avgWobble)
+            let totalDist = points.map { $0.distanceM }.reduce(0, +)
+            return MinuteSummary(minute: minute, avgPace: avgPace, avgStrokeRate: avgStroke, avgWobble: avgWobble, distanceM: totalDist)
         }
 
-        // Whole session averages as final row (minute = 0 means "total")
+        // Whole session totals/averages as final row (minute = 0 means "total")
         let allSpeed = dataPoints.map { $0.speed }.reduce(0, +) / Double(dataPoints.count)
         let allPace = allSpeed > 0.1 ? 500.0 / allSpeed : 0
         let allStroke = dataPoints.map { $0.strokeRate }.reduce(0, +) / Double(dataPoints.count)
         let allWobble = dataPoints.map { $0.wobble }.reduce(0, +) / Double(dataPoints.count)
-        summaries.append(MinuteSummary(minute: 0, avgPace: allPace, avgStrokeRate: allStroke, avgWobble: allWobble))
+        let totalDist = dataPoints.map { $0.distanceM }.reduce(0, +)
+        summaries.append(MinuteSummary(minute: 0, avgPace: allPace, avgStrokeRate: allStroke, avgWobble: allWobble, distanceM: totalDist))
 
         DispatchQueue.main.async {
             self.sessionSummary = summaries
