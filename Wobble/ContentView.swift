@@ -63,6 +63,17 @@ struct ContentView: View {
                 }
             }
 
+            if recorder.isRecording {
+                VStack(spacing: 4) {
+                    Text("\(Int(recorder.distanceTravelled.rounded())) m")
+                        .font(.system(size: 48, weight: .light, design: .monospaced))
+                        .foregroundColor(.primary)
+                    Text("Distance")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
             Button(action: toggleRecording) {
                 Text(recorder.isRecording ? "Stop" : "Start")
                     .font(.system(size: 28, weight: .semibold))
