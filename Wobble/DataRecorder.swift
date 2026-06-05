@@ -66,8 +66,8 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     // Stroke rate autocorrelation
     private var accelMagnitudeBuffer: [Double] = []
     private let strokeBufferSize = 100
-    private let minStrokeLag = 15  // 40 spm = 1.5s = 15 samples
-    private let maxStrokeLag = 30  // 20 spm = 3.0s = 30 samples
+    private let minStrokeLag = 12  // 50 spm = 1.2s = 12 samples
+    private let maxStrokeLag = 60  // 10 spm = 6.0s = 60 samples
     // Minimum normalized autocorrelation peak (0...1) required to trust a reading
     private let minStrokeConfidence = 0.15
 
