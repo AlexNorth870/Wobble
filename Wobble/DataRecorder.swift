@@ -68,6 +68,8 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     private let strokeBufferSize = 100
     private let minStrokeLag = 15  // 40 spm = 1.5s = 15 samples
     private let maxStrokeLag = 30  // 20 spm = 3.0s = 30 samples
+    // Minimum normalized autocorrelation peak (0...1) required to trust a reading
+    private let minStrokeConfidence = 0.15
 
     override init() {
         super.init()
@@ -336,7 +338,11 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         let mean = accelMagnitudeBuffer.reduce(0, +) / Double(n)
         let centered = accelMagnitudeBuffer.map { $0 - mean }
 
-        // Autocorrelation: find lag with highest correlation in stroke rate range
+        // Signal energy (lag-0 autocorrelation) used to normalize peaks into [-1, 1]
+        let variance = centered.map { $0 * $0 }.reduce(0, +) / Double(n)
+        guard variance > 0 else { return 0 }
+
+        // Autocorrelation: find lag with highest normalized correlation in stroke rate range
         var bestCorr = -Double.infinity
         var bestLag = 0
 
@@ -347,14 +353,17 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             for i in 0..<count {
                 corr += centered[i] * centered[i + lag]
             }
-            corr /= Double(count)
+            // Biased estimator (divide by constant n) then normalize by variance,
+            // giving a true autocorrelation coefficient in [-1, 1] comparable across lags
+            corr = (corr / Double(n)) / variance
             if corr > bestCorr {
                 bestCorr = corr
                 bestLag = lag
             }
         }
 
-        guard bestLag > 0 else { return 0 }
+        // Suppress weak/non-periodic readings rather than reporting noise
+        guard bestLag > 0, bestCorr >= minStrokeConfidence else { return 0 }
         let periodSeconds = Double(bestLag) * 0.1
         return 60.0 / periodSeconds
     }
