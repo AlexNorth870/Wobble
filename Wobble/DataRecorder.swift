@@ -133,9 +133,9 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.recordDataPoint()
-            // Update speed display every second after 10s have elapsed
+            // Update speed display once per second (matches the 1 Hz GPS update)
             let elapsed = Date().timeIntervalSince(self.startDate ?? Date())
-            if elapsed >= 10, Int(elapsed * 10) % 10 == 0 {
+            if Int(elapsed * 10) % 10 == 0 {
                 let speed = max(self.currentLocation?.speed ?? 0, 0)
                 DispatchQueue.main.async { self.currentSpeedMps = speed }
             }
