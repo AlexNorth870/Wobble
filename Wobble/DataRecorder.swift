@@ -63,13 +63,29 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     // 10 seconds at 0.1s intervals = 100 samples
     private var rotationMagnitudeBuffer: [Double] = []
     private let wobbleBufferSize = 100
-    // Stroke rate autocorrelation
-    private var accelMagnitudeBuffer: [Double] = []
-    private let strokeBufferSize = 100
-    private let minStrokeLag = 12  // 50 spm = 1.2s = 12 samples
-    private let maxStrokeLag = 60  // 10 spm = 6.0s = 60 samples
-    // Minimum normalized autocorrelation peak (0...1) required to trust a reading
-    private let minStrokeConfidence = 0.15
+    // Stroke rate via interval timing of forward (surge) acceleration: detect
+    // stroke onsets and report 60 / (mean recent inter-onset interval).
+    private var rawSurgeBuffer: [Double] = []                         // recent raw surge, for smoothing
+    private var smoothedSurgeBuffer: [Double] = []                    // trailing window of smoothed surge (for mean/RMS)
+    private var strokeHigh = false                                    // hysteresis state (above/below threshold)
+    private var strokeOnsetTimes: [Double] = []                      // times (s) of recent detected stroke onsets
+    private var strokeSamples = 0                                     // sample counter, drives the internal clock
+    private var strokeSmoothedRate = 0.0                             // EMA-smoothed output rate (spm)
+    private var horizontalAccelBuffer: [(x: Double, y: Double)] = []  // world-horizontal accel, for the fallback axis
+    private var lastForwardAxis: (x: Double, y: Double)?              // last known travel direction (world frame)
+    private var axisSource: String = "none"                          // debug: which axis produced the last surge (A/B/held/none)
+    private let axisBufferSize = 100      // 10 s of world-horizontal accel for the PCA fallback axis
+    private let strokeSmoothingWindow = 10 // trailing surge moving average (~1 s) to cut jitter
+    private let strokeWindowSize = 120     // 12 s at 0.1 s: window for the mean/RMS that sets the threshold
+    private let strokeThresholdFraction = 0.3 // onset threshold as a fraction of window RMS
+    private let strokeMinRMS = 0.005      // below this surge RMS the boat is treated as at rest (report 0)
+    private let strokesToAverage = 3      // average the interval over this many recent strokes
+    private let strokeMaxGapSeconds = 6.0 // no onset within this long -> report 0 (~10 spm floor)
+    private let strokeMinSeconds = 3.0    // require this much data before reporting a rate
+    private let strokeOutputSmoothing = 0.1 // EMA factor on the output rate (~1 s settling at 10 Hz)
+    private let minCourseSpeed = 0.5      // m/s below which GPS course is unreliable (use fallback axis)
+    private let pcaMinSamples = 20        // ~2 s of data before trusting the fallback (PCA) axis
+    private let minSurgeVariance = 0.0025 // min horizontal accel variance (g^2) for a trustworthy fallback axis
 
     override init() {
         super.init()
@@ -85,7 +101,14 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         lastSavedFilename = nil
         csvRows = []
         rotationMagnitudeBuffer = []
-        accelMagnitudeBuffer = []
+        rawSurgeBuffer = []
+        smoothedSurgeBuffer = []
+        strokeHigh = false
+        strokeOnsetTimes = []
+        strokeSamples = 0
+        strokeSmoothedRate = 0
+        horizontalAccelBuffer = []
+        lastForwardAxis = nil
         wobbleFactor = 0
         strokeRate = 0
         distanceTravelled = 0
@@ -118,14 +141,17 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             "rotation_rate_z_rads," +
             "wobble_factor_deg," +
             "stroke_rate_spm," +
-            "distance_cumulative_m"
+            "distance_cumulative_m," +
+            "surge_g," +          // debug: projected fore-aft acceleration fed to stroke detector
+            "axis_source"         // debug: A=GPS course, B=PCA fallback, held=last axis, none
         )
 
         locationManager.startUpdatingLocation()
 
         if motionManager.isDeviceMotionAvailable {
             motionManager.deviceMotionUpdateInterval = 0.02
-            motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical)
+            // True-north reference so GPS course and acceleration share a frame
+            motionManager.startDeviceMotionUpdates(using: .xTrueNorthZVertical)
         }
 
         isRecording = true
@@ -152,7 +178,14 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         wobbleFactor = 0
         strokeRate = 0
         rotationMagnitudeBuffer = []
-        accelMagnitudeBuffer = []
+        rawSurgeBuffer = []
+        smoothedSurgeBuffer = []
+        strokeHigh = false
+        strokeOnsetTimes = []
+        strokeSamples = 0
+        strokeSmoothedRate = 0
+        horizontalAccelBuffer = []
+        lastForwardAxis = nil
         saveCSV()
         uploadToCloudKit()
         computeSessionSummary()
@@ -174,6 +207,8 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         var ax: Double = 0, ay: Double = 0, az: Double = 0
         var gx: Double = 0, gy: Double = 0, gz: Double = 0
         var gravX: Double = 0, gravY: Double = 0, gravZ: Double = 0
+        // user acceleration rotated into the world frame (X = true north, Y = west)
+        var worldAccelX: Double = 0, worldAccelY: Double = 0
 
         if let motion = motionManager.deviceMotion {
             pitch = motion.attitude.pitch
@@ -188,6 +223,10 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             gx    = motion.rotationRate.x
             gy    = motion.rotationRate.y
             gz    = motion.rotationRate.z
+            // Rotate device-frame user acceleration into the world frame
+            let m = motion.attitude.rotationMatrix
+            worldAccelX = m.m11 * ax + m.m12 * ay + m.m13 * az
+            worldAccelY = m.m21 * ax + m.m22 * ay + m.m23 * az
         }
 
         let pace = speed > 0.1 ? (500.0 / speed) / 60.0 : 0.0
@@ -196,11 +235,30 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         let sampleDistance = speed * 0.1
         distanceTravelled += sampleDistance
 
-        // Stroke rate via autocorrelation of user acceleration magnitude
-        let accelMag = sqrt(ax * ax + ay * ay + az * az)
-        accelMagnitudeBuffer.append(accelMag)
-        if accelMagnitudeBuffer.count > strokeBufferSize {
-            accelMagnitudeBuffer.removeFirst()
+        // Stroke rate via cycle counting of forward (surge) acceleration.
+        // Project world-horizontal acceleration onto the travel direction so only
+        // fore-aft surge survives; vertical bob and lateral roll project to ~0.
+        horizontalAccelBuffer.append((x: worldAccelX, y: worldAccelY))
+        if horizontalAccelBuffer.count > axisBufferSize {
+            horizontalAccelBuffer.removeFirst()
+        }
+        let rawCourse = currentLocation?.course ?? -1
+        let surge: Double
+        if let axis = forwardAxis(rawCourse: rawCourse, speed: speed) {
+            surge = worldAccelX * axis.x + worldAccelY * axis.y
+        } else {
+            surge = 0
+        }
+        // Smooth surge with a trailing moving average, then keep a 12 s window of
+        // smoothed surge for the cycle-counting stroke detector.
+        rawSurgeBuffer.append(surge)
+        if rawSurgeBuffer.count > strokeSmoothingWindow {
+            rawSurgeBuffer.removeFirst()
+        }
+        let smoothedSurge = rawSurgeBuffer.reduce(0, +) / Double(rawSurgeBuffer.count)
+        smoothedSurgeBuffer.append(smoothedSurge)
+        if smoothedSurgeBuffer.count > strokeWindowSize {
+            smoothedSurgeBuffer.removeFirst()
         }
         let currentStrokeRate = computeStrokeRate()
         DispatchQueue.main.async { self.strokeRate = currentStrokeRate }
@@ -216,7 +274,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         DispatchQueue.main.async { self.wobbleFactor = currentWobble }
 
         let row = "\(shortUserID),\(trackNumber)," + String(
-            format: "%.3f,%@,%.8f,%.8f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.4f,%.1f,%.2f",
+            format: "%.3f,%@,%.8f,%.8f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.4f,%.1f,%.2f,%.6f,%@",
             elapsed, timestamp,
             lat, lon, alt, speed, pace, course,
             pitch, roll, yaw,
@@ -225,7 +283,9 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             gx, gy, gz,
             currentWobble,
             currentStrokeRate,
-            distanceTravelled
+            distanceTravelled,
+            surge,
+            axisSource
         )
         csvRows.append(row)
         dataPoints.append(DataPoint(elapsed: elapsed, speed: speed, strokeRate: currentStrokeRate, wobble: currentWobble, distanceM: sampleDistance))
@@ -326,46 +386,103 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     // MARK: - Stroke Rate
 
+    // Time the gaps between recent stroke onsets and report 60 / (mean interval).
+    // Continuous (unlike counting cycles in a fixed window, which quantizes the
+    // rate) and robust to a varying rate (unlike autocorrelation). Onsets are
+    // detected by hysteresis on the smoothed surge; the output is EMA-smoothed.
     private func computeStrokeRate() -> Double {
-        let n = accelMagnitudeBuffer.count
-        guard n > maxStrokeLag else { return 0 }
+        let now = Double(strokeSamples) * 0.1
+        strokeSamples += 1
 
-        // Only calculate if the last 10 samples all exceed the activity threshold
-        let recentSamples = accelMagnitudeBuffer.suffix(10)
-        guard recentSamples.count == 10, recentSamples.allSatisfy({ $0 > 0.15 }) else { return 0 }
+        let n = smoothedSurgeBuffer.count
+        guard n >= 1, let current = smoothedSurgeBuffer.last else { return emitStrokeRate(0) }
 
-        // Subtract mean to center signal around zero
-        let mean = accelMagnitudeBuffer.reduce(0, +) / Double(n)
-        let centered = accelMagnitudeBuffer.map { $0 - mean }
+        // Mean/RMS over the trailing window set the onset threshold
+        let mean = smoothedSurgeBuffer.reduce(0, +) / Double(n)
+        let rms = sqrt(smoothedSurgeBuffer.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(n))
 
-        // Signal energy (lag-0 autocorrelation) used to normalize peaks into [-1, 1]
-        let variance = centered.map { $0 * $0 }.reduce(0, +) / Double(n)
-        guard variance > 0 else { return 0 }
+        // Warm-up and idle gate
+        guard now + 0.1 >= strokeMinSeconds, rms > strokeMinRMS else { return emitStrokeRate(0) }
 
-        // Autocorrelation: find lag with highest normalized correlation in stroke rate range
-        var bestCorr = -Double.infinity
-        var bestLag = 0
-
-        for lag in minStrokeLag...maxStrokeLag {
-            guard lag < n else { continue }
-            var corr = 0.0
-            let count = n - lag
-            for i in 0..<count {
-                corr += centered[i] * centered[i + lag]
-            }
-            // Biased estimator (divide by constant n) then normalize by variance,
-            // giving a true autocorrelation coefficient in [-1, 1] comparable across lags
-            corr = (corr / Double(n)) / variance
-            if corr > bestCorr {
-                bestCorr = corr
-                bestLag = lag
-            }
+        // Hysteresis onset detection: rising above +threshold after dropping below
+        // -threshold marks a stroke. The threshold scales with RMS so weak-but-real
+        // strokes are caught while small jitter is rejected.
+        let centered = current - mean
+        let threshold = strokeThresholdFraction * rms
+        if !strokeHigh, centered > threshold {
+            strokeHigh = true
+            strokeOnsetTimes.append(now)
+            if strokeOnsetTimes.count > strokesToAverage + 1 { strokeOnsetTimes.removeFirst() }
+        } else if strokeHigh, centered < -threshold {
+            strokeHigh = false
         }
 
-        // Suppress weak/non-periodic readings rather than reporting noise
-        guard bestLag > 0, bestCorr >= minStrokeConfidence else { return 0 }
-        let periodSeconds = Double(bestLag) * 0.1
-        return 60.0 / periodSeconds
+        guard let last = strokeOnsetTimes.last, strokeOnsetTimes.count >= 2 else { return emitStrokeRate(0) }
+        // No stroke for too long -> treat as stopped
+        if now - last > strokeMaxGapSeconds { return emitStrokeRate(0) }
+
+        let intervals = zip(strokeOnsetTimes.dropFirst(), strokeOnsetTimes).map { $0 - $1 }
+        let avg = intervals.reduce(0, +) / Double(intervals.count)
+        guard avg > 0 else { return emitStrokeRate(0) }
+        return emitStrokeRate(60.0 / avg)
+    }
+
+    // Exponential smoothing of the output rate. A zero (idle/stopped) resets the
+    // smoother so the number drops promptly instead of decaying.
+    private func emitStrokeRate(_ raw: Double) -> Double {
+        if raw <= 0 {
+            strokeSmoothedRate = 0
+        } else if strokeSmoothedRate <= 0 {
+            strokeSmoothedRate = raw   // seed on first stroke to avoid a slow ramp from 0
+        } else {
+            strokeSmoothedRate = strokeOutputSmoothing * raw + (1 - strokeOutputSmoothing) * strokeSmoothedRate
+        }
+        return strokeSmoothedRate
+    }
+
+    // Horizontal travel direction in the world frame (X = true north, Y = west).
+    // Option A: GPS course when valid and moving. Option B: dominant axis of recent
+    // horizontal acceleration. Falls back to the last known axis, or nil until one exists.
+    private func forwardAxis(rawCourse: Double, speed: Double) -> (x: Double, y: Double)? {
+        // Option A: GPS course (degrees clockwise from true north; -1 when invalid)
+        if rawCourse >= 0, speed > minCourseSpeed {
+            let rad = rawCourse * .pi / 180.0
+            let axis = (x: cos(rad), y: -sin(rad))
+            lastForwardAxis = axis
+            axisSource = "A"
+            return axis
+        }
+        // Option B: principal axis of horizontal acceleration variance
+        if let axis = principalHorizontalAxis() {
+            lastForwardAxis = axis
+            axisSource = "B"
+            return axis
+        }
+        axisSource = lastForwardAxis != nil ? "held" : "none"
+        return lastForwardAxis
+    }
+
+    // Dominant axis of recent world-horizontal acceleration (the surge direction),
+    // used when GPS course is unavailable. Sign is aligned to the previous axis so
+    // the projected signal stays continuous (the eigenvector's sign is arbitrary).
+    private func principalHorizontalAxis() -> (x: Double, y: Double)? {
+        let n = horizontalAccelBuffer.count
+        guard n >= pcaMinSamples else { return nil }
+        let mx = horizontalAccelBuffer.reduce(0) { $0 + $1.x } / Double(n)
+        let my = horizontalAccelBuffer.reduce(0) { $0 + $1.y } / Double(n)
+        var sxx = 0.0, syy = 0.0, sxy = 0.0
+        for p in horizontalAccelBuffer {
+            let dx = p.x - mx, dy = p.y - my
+            sxx += dx * dx; syy += dy * dy; sxy += dx * dy
+        }
+        // Require some directional energy before trusting an axis
+        guard (sxx + syy) / Double(n) > minSurgeVariance else { return nil }
+        let theta = 0.5 * atan2(2 * sxy, sxx - syy)
+        var axis = (x: cos(theta), y: sin(theta))
+        if let last = lastForwardAxis, axis.x * last.x + axis.y * last.y < 0 {
+            axis = (x: -axis.x, y: -axis.y)
+        }
+        return axis
     }
 
     // MARK: - CLLocationManagerDelegate
