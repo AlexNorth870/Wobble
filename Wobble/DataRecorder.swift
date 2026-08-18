@@ -92,6 +92,32 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         locationManager.requestWhenInUseAuthorization()
+        pingFirstLaunchIfNeeded()
+    }
+
+    // Silently notify the developer that a user has installed and run the app.
+    // Fires once ever: hits a plain HTML page on the website (which registers as a
+    // page view) with the rower ID and app version as query parameters. Fire-and-
+    // forget, no UI. The "done" flag is only set on a successful request, so if the
+    // first run has no signal it will retry on a later launch.
+    private func pingFirstLaunchIfNeeded() {
+        let doneKey = "wobble_first_launch_pinged"
+        guard !UserDefaults.standard.bool(forKey: doneKey) else { return }
+
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        var components = URLComponents(string: "https://www.wobblerowing.com/api/first-launch.html")
+        components?.queryItems = [
+            URLQueryItem(name: "id", value: shortUserID),
+            URLQueryItem(name: "version", value: version)
+        ]
+        guard let url = components?.url else { return }
+
+        URLSession.shared.dataTask(with: url) { _, response, error in
+            guard error == nil,
+                  let http = response as? HTTPURLResponse,
+                  (200...299).contains(http.statusCode) else { return }
+            UserDefaults.standard.set(true, forKey: doneKey)
+        }.resume()
     }
 
     func start() {
