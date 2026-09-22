@@ -50,7 +50,7 @@ struct SessionSummaryView: View {
                                     .frame(width: 58, alignment: .trailing)
                                     .bold(isTotal)
                                 Spacer()
-                                Text(String(format: "%.0f°", row.avgWobble))
+                                Text(String(format: "%.1f°", row.avgWobble))
                                     .frame(width: 58, alignment: .trailing)
                                     .bold(isTotal)
                                 Spacer()

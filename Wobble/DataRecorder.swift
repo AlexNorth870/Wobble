@@ -47,6 +47,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     }()
 
     // 8-character SHA256 hash of the UUID for display and CSV
+    // ultimately identifies each user, although with no personal information
     let shortUserID: String = {
         let raw = UserDefaults.standard.string(forKey: "wobble_user_uuid") ?? UUID().uuidString
         let hash = SHA256.hash(data: Data(raw.utf8))
@@ -54,6 +55,9 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     }()
 
     // Track number — increments each time Start is pressed, persists across app restarts
+    // This will be useful for identifying tracks
+    // TODO:  add a table for track specific information such as weather, water conditions and team
+    //  members (not required of course)
     private(set) var trackNumber: Int = UserDefaults.standard.integer(forKey: "wobble_track_number")
 
     private var startDate: Date?
@@ -100,6 +104,8 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     // page view) with the rower ID and app build number as query parameters. Fire-and-
     // forget, no UI. The "done" flag is only set on a successful request, so if the
     // first run has no signal it will retry on a later launch.
+    // Hitting that page will cause a notification to be sent, let us know that
+    // someone has installed and run this app.
     private func pingFirstLaunchIfNeeded() {
         let doneKey = "wobble_first_launch_pinged"
         guard !UserDefaults.standard.bool(forKey: doneKey) else { return }
@@ -263,7 +269,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
 
         // Stroke rate via cycle counting of forward (surge) acceleration.
         // Project world-horizontal acceleration onto the travel direction so only
-        // fore-aft surge survives; vertical bob and lateral roll project to ~0.
+        // fore-aft surge is used; vertical bob and lateral movement project to ~0.
         horizontalAccelBuffer.append((x: worldAccelX, y: worldAccelY))
         if horizontalAccelBuffer.count > axisBufferSize {
             horizontalAccelBuffer.removeFirst()
@@ -296,7 +302,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             rotationMagnitudeBuffer.removeFirst()
         }
         let avgMagnitudeRads = rotationMagnitudeBuffer.reduce(0, +) / Double(rotationMagnitudeBuffer.count)
-        let currentWobble = (avgMagnitudeRads * 180.0 / .pi).rounded()
+        let currentWobble = avgMagnitudeRads * 180.0 / .pi
         DispatchQueue.main.async { self.wobbleFactor = currentWobble }
 
         let row = "\(shortUserID),\(trackNumber)," + String(
@@ -385,6 +391,9 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     // MARK: - CloudKit Upload
 
+    // TODO: make the database upload more real time so that
+    //    a coach can potentially monitor it
+
     private func uploadToCloudKit() {
         guard !pendingRecords.isEmpty else { return }
         let records = pendingRecords
@@ -415,7 +424,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     // Time the gaps between recent stroke onsets and report 60 / (mean interval).
     // Continuous (unlike counting cycles in a fixed window, which quantizes the
     // rate) and robust to a varying rate (unlike autocorrelation). Onsets are
-    // detected by hysteresis on the smoothed surge; the output is EMA-smoothed.
+    // detected by hysteresis on the smoothed surge; the output filtered.
     private func computeStrokeRate() -> Double {
         let now = Double(strokeSamples) * 0.1
         strokeSamples += 1
@@ -469,6 +478,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     // Horizontal travel direction in the world frame (X = true north, Y = west).
     // Option A: GPS course when valid and moving. Option B: dominant axis of recent
     // horizontal acceleration. Falls back to the last known axis, or nil until one exists.
+    // necessary to find this so that we only count accelleration in this direction
     private func forwardAxis(rawCourse: Double, speed: Double) -> (x: Double, y: Double)? {
         // Option A: GPS course (degrees clockwise from true north; -1 when invalid)
         if rawCourse >= 0, speed > minCourseSpeed {
@@ -526,6 +536,9 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     // MARK: - CSV Save
 
+    // we save the data for analysis on the phone itself
+
+    // TODO: figure out how to save the CSV to the iCloud files rather than the onDevice file folders
     private func saveCSV() {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
