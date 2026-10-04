@@ -14,6 +14,7 @@ struct MinuteSummary {
 
 class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var isRecording = false
+    @Published var isArmed = false        // auto start: waiting for the boat to move
     @Published var lastSavedFilename: String?
     @Published var currentSpeedMps: Double = 0
     @Published var wobbleFactor: Double = 0
@@ -60,7 +61,14 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     //  members (not required of course)
     private(set) var trackNumber: Int = UserDefaults.standard.integer(forKey: "wobble_track_number")
 
-    private var startDate: Date?
+    private(set) var startDate: Date?
+
+    // Auto start: once armed, recording begins when GPS speed reaches the threshold on
+    // consecutive fixes. The start time is backdated to the first qualifying fix.
+    private let autoStartSpeed = 1.5          // m/s, well above GPS noise and drift at the start line
+    private let autoStartConsecutiveFixes = 2 // fixes above threshold required to trigger
+    private var autoStartFixCount = 0
+    private var autoStartFirstFixTime: Date?
     private var recordingTimer: Timer?
     private var csvRows: [String] = []
     private var currentLocation: CLLocation?
@@ -126,10 +134,26 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         }.resume()
     }
 
-    func start() {
+    // Turn on GPS and wait for movement; the timer stays at zero until then.
+    func arm() {
+        guard !isRecording else { return }
+        autoStartFixCount = 0
+        autoStartFirstFixTime = nil
+        isArmed = true
+        locationManager.startUpdatingLocation()
+    }
+
+    func disarm() {
+        guard isArmed else { return }
+        isArmed = false
+        locationManager.stopUpdatingLocation()
+    }
+
+    func start(at date: Date = Date()) {
+        isArmed = false
         trackNumber += 1
         UserDefaults.standard.set(trackNumber, forKey: "wobble_track_number")
-        startDate = Date()
+        startDate = date
         lastSavedFilename = nil
         csvRows = []
         rotationMagnitudeBuffer = []
@@ -525,12 +549,30 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         currentLocation = locations.last
+        if isArmed { checkAutoStart(locations) }
+    }
+
+    private func checkAutoStart(_ locations: [CLLocation]) {
+        for location in locations {
+            // speed is -1 when invalid
+            if location.speed >= autoStartSpeed {
+                if autoStartFixCount == 0 { autoStartFirstFixTime = location.timestamp }
+                autoStartFixCount += 1
+            } else {
+                autoStartFixCount = 0
+                autoStartFirstFixTime = nil
+            }
+            if autoStartFixCount >= autoStartConsecutiveFixes {
+                start(at: autoStartFirstFixTime ?? location.timestamp)
+                return
+            }
+        }
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         if manager.authorizationStatus == .authorizedWhenInUse ||
            manager.authorizationStatus == .authorizedAlways {
-            if isRecording { manager.startUpdatingLocation() }
+            if isRecording || isArmed { manager.startUpdatingLocation() }
         }
     }
 

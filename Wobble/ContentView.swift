@@ -84,6 +84,25 @@ struct ContentView: View {
                     .shadow(radius: 4)
             }
 
+            if !recorder.isRecording {
+                VStack(spacing: 8) {
+                    Button(action: toggleAutoStart) {
+                        Text(recorder.isArmed ? "Cancel Auto Start" : "Auto Start")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 12)
+                            .background(recorder.isArmed ? Color.orange : Color.blue)
+                            .clipShape(Capsule())
+                    }
+                    if recorder.isArmed {
+                        Text("Waiting for the boat to move")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
             if let filename = recorder.lastSavedFilename {
                 Text("Saved: \(filename)")
                     .font(.caption)
@@ -111,9 +130,20 @@ struct ContentView: View {
             if recording {
                 previousBrightness = UIScreen.main.brightness
                 UIScreen.main.brightness = 1.0
+                // Elapsed time comes from the recorder's start date, which auto start backdates
+                displayTimer?.invalidate()
+                displayTimer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { _ in
+                    elapsedTime = Date().timeIntervalSince(recorder.startDate ?? Date())
+                }
             } else {
                 UIScreen.main.brightness = previousBrightness
+                displayTimer?.invalidate()
+                displayTimer = nil
             }
+            updateIdleTimer()
+        }
+        .onChange(of: recorder.isArmed) { _ in
+            updateIdleTimer()
         }
     }
 
@@ -126,15 +156,25 @@ struct ContentView: View {
     private func toggleRecording() {
         if recorder.isRecording {
             recorder.stop()
-            displayTimer?.invalidate()
-            displayTimer = nil
         } else {
             elapsedTime = 0
             recorder.start()
-            displayTimer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { _ in
-                elapsedTime += 0.01
-            }
         }
+    }
+
+    private func toggleAutoStart() {
+        if recorder.isArmed {
+            recorder.disarm()
+        } else {
+            elapsedTime = 0
+            recorder.arm()
+        }
+    }
+
+    // Keep the screen awake while waiting at the start or recording; if the phone
+    // locks, location updates stop and auto start would never trigger.
+    private func updateIdleTimer() {
+        UIApplication.shared.isIdleTimerDisabled = recorder.isArmed || recorder.isRecording
     }
 
     private func paceString(from speedMps: Double) -> String {
