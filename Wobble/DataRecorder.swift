@@ -73,7 +73,8 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var csvRows: [String] = []
     private var currentLocation: CLLocation?
     // 10 seconds at 0.1s intervals = 100 samples
-    private var rotationMagnitudeBuffer: [Double] = []
+    private var rotationMagnitudeBuffer: [Double] = []   // |roll rate| about the travel direction (rad/s)
+    private var lastCourseAxis: (x: Double, y: Double)?  // GPS travel direction for the wobble roll axis
     private let wobbleBufferSize = 100
     // Stroke rate via interval timing of forward (surge) acceleration: detect
     // stroke onsets and report 60 / (mean recent inter-onset interval).
@@ -165,6 +166,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         strokeSmoothedRate = 0
         horizontalAccelBuffer = []
         lastForwardAxis = nil
+        lastCourseAxis = nil
         wobbleFactor = 0
         strokeRate = 0
         distanceTravelled = 0
@@ -242,6 +244,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         strokeSmoothedRate = 0
         horizontalAccelBuffer = []
         lastForwardAxis = nil
+        lastCourseAxis = nil
         saveCSV()
         uploadToCloudKit()
         computeSessionSummary()
@@ -265,6 +268,8 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         var gravX: Double = 0, gravY: Double = 0, gravZ: Double = 0
         // user acceleration rotated into the world frame (X = true north, Y = west)
         var worldAccelX: Double = 0, worldAccelY: Double = 0
+        // horizontal rotation rate in the world frame, for the wobble roll axis
+        var worldRotX: Double = 0, worldRotY: Double = 0
 
         if let motion = motionManager.deviceMotion {
             pitch = motion.attitude.pitch
@@ -283,6 +288,11 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             let m = motion.attitude.rotationMatrix
             worldAccelX = m.m11 * ax + m.m12 * ay + m.m13 * az
             worldAccelY = m.m21 * ax + m.m22 * ay + m.m23 * az
+            // CMRotationMatrix maps world -> device, so device -> world uses its
+            // transpose. (The acceleration lines above use the matrix itself; the
+            // stroke detector is tuned on that signal, so it is left unchanged.)
+            worldRotX = m.m11 * gx + m.m21 * gy + m.m31 * gz
+            worldRotY = m.m12 * gx + m.m22 * gy + m.m32 * gz
         }
 
         let pace = speed > 0.1 ? (500.0 / speed) / 60.0 : 0.0
@@ -319,9 +329,21 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         let currentStrokeRate = computeStrokeRate()
         DispatchQueue.main.async { self.strokeRate = currentStrokeRate }
 
-        // Wobble factor: rolling 10s average of rotation rate magnitude
-        let magnitude = sqrt(gx * gx + gy * gy + gz * gz)
-        rotationMagnitudeBuffer.append(magnitude)
+        // Wobble factor: rolling 10s average of the boat's roll rate, i.e. rotation
+        // about the travel direction (side-to-side rocking). Pitch from the stroke
+        // cycle and yaw from steering are excluded. Until GPS gives a course, fall
+        // back to all horizontal rotation (still excludes yaw).
+        if rawCourse >= 0, speed > minCourseSpeed {
+            let rad = rawCourse * .pi / 180.0
+            lastCourseAxis = (x: cos(rad), y: -sin(rad))
+        }
+        let rollRate: Double
+        if let axis = lastCourseAxis {
+            rollRate = abs(worldRotX * axis.x + worldRotY * axis.y)
+        } else {
+            rollRate = sqrt(worldRotX * worldRotX + worldRotY * worldRotY)
+        }
+        rotationMagnitudeBuffer.append(rollRate)
         if rotationMagnitudeBuffer.count > wobbleBufferSize {
             rotationMagnitudeBuffer.removeFirst()
         }
