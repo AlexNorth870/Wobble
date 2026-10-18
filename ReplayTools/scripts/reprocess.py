@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Bring a Wobble recording up to the app's current algorithms.
 
-  * stroke_rate_spm  -> recomputed with the app's interval-timing detector
-                        (ReplayTools `IntervalAnalyzer`, run via the Swift CLI so
-                        it is the same code as the replay harness).
+  * stroke_rate_spm  -> recomputed with the app's fused detector (dominant rhythm
+                        of pitch, gravity z and GPS speed; ReplayTools
+                        `FusedAnalyzer`, run via the Swift CLI so it is the same
+                        code as the replay harness).
   * wobble_roll_deg, roll_rate_deg_s -> added if missing (see add_roll_wobble.py).
 
 Recordings made before surge_g was logged get surge rebuilt from the logged
@@ -95,7 +96,7 @@ def rebuild_surge(rows):
     return out
 
 
-# MARK: - Stroke rate (Swift IntervalAnalyzer)
+# MARK: - Stroke rate (Swift FusedAnalyzer)
 
 def replay_binary():
     subprocess.run(["swift", "build", "-q", "--package-path", str(PACKAGE)], check=True)
@@ -104,13 +105,14 @@ def replay_binary():
     return Path(out) / "wobble-replay"
 
 
-def interval_rates(binary, times, surges, tmp):
+def fused_rates(binary, data, surges, tmp):
     src, dst = Path(tmp) / "in.csv", Path(tmp) / "out.csv"
     with open(src, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["stopwatch_time_s", "surge_g"])
-        w.writerows(zip(times, surges))
-    subprocess.run([str(binary), str(src), "--method", "interval", "--out", str(dst)],
+        w.writerow(["stopwatch_time_s", "surge_g", "pitch_rad", "gravity_z_g", "speed_mps"])
+        w.writerows((d["stopwatch_time_s"], s, d["pitch_rad"], d["gravity_z_g"], d["speed_mps"])
+                    for d, s in zip(data, surges))
+    subprocess.run([str(binary), str(src), "--method", "fused", "--out", str(dst)],
                    check=True, capture_output=True)
     with open(dst, newline="") as f:
         return [float(r["stroke_rate_new_spm"]) for r in csv.DictReader(f)]
@@ -121,7 +123,7 @@ def interval_rates(binary, times, surges, tmp):
 def compute(header, rows):
     """Returns (stroke rates per row, {roll column: values} for roll columns not yet present)."""
     ix = {name: i for i, name in enumerate(header)}
-    missing = [c for c in SURGE_COLS + ["stopwatch_time_s", "stroke_rate_spm"] if c not in ix]
+    missing = [c for c in SURGE_COLS + ["gravity_z_g", "stopwatch_time_s", "stroke_rate_spm"] if c not in ix]
     if missing:
         sys.exit(f"error: missing columns: {', '.join(missing)}")
     key_cols = ["source_file"] if "source_file" in ix else [c for c in ("user_uuid", "track") if c in ix]
@@ -130,7 +132,7 @@ def compute(header, rows):
     sessions = defaultdict(list)
     for i, row in enumerate(rows):
         try:
-            parsed = {c: float(row[ix[c]]) for c in SURGE_COLS + ["stopwatch_time_s"]}
+            parsed = {c: float(row[ix[c]]) for c in SURGE_COLS + ["gravity_z_g", "stopwatch_time_s"]}
         except (TypeError, ValueError, IndexError):
             continue
         logged = row[ix["surge_g"]] if has_surge else None
@@ -153,8 +155,7 @@ def compute(header, rows):
             else:
                 surges = rebuilt
                 rebuilt_sessions += 1
-            times = [d["stopwatch_time_s"] for d in data]
-            for (i, _), rate in zip(members, interval_rates(binary, times, surges, tmp)):
+            for (i, _), rate in zip(members, fused_rates(binary, data, surges, tmp)):
                 rates[i] = rate
 
     print(f"{len(sessions)} session(s); surge rebuilt for {rebuilt_sessions}", file=sys.stderr)

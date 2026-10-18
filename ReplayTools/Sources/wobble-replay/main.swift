@@ -22,7 +22,7 @@ func stringArg(_ name: String) -> String? {
     return args[i + 1]
 }
 
-let method = stringArg("--method") ?? "acf"   // "acf" (autocorrelation) or "cycle"
+let method = stringArg("--method") ?? "acf"   // "acf" (autocorrelation), "cycle", "interval" or "fused"
 
 var params = StrokeParams()
 if let w = stringArg("--smooth").flatMap(Int.init), w >= 1 { params.smoothingWindow = w }
@@ -40,16 +40,22 @@ if let f = stringArg("--threshold").flatMap(Double.init), f > 0 { intervalParams
 if let k = stringArg("--strokes").flatMap(Int.init), k >= 1 { intervalParams.strokesToAverage = k }
 if let a = stringArg("--smooth-out").flatMap(Double.init), a > 0, a <= 1 { intervalParams.outputSmoothing = a }
 
-// One step function per method; each takes a raw surge sample and returns spm.
+var fusedParams = FusedParams()
+if let s = stringArg("--window").flatMap(Double.init), s > 0 { fusedParams.windowSeconds = s }
+
+// One step function per method; each takes a raw surge sample (plus pitch,
+// gravity-z and speed, which only the fused detector uses) and returns spm.
 var acf = StrokeAnalyzer(params: params)
 var cyc = CycleAnalyzer(params: cycleParams)
 var itv = IntervalAnalyzer(params: intervalParams)
-let step: (Double) -> Double
+var fus = FusedAnalyzer(params: fusedParams)
+let step: (_ surge: Double, _ pitch: Double, _ gravityZ: Double, _ speed: Double) -> Double
 switch method {
-case "cycle":    step = { cyc.push($0) }
-case "interval": step = { itv.push($0) }
-case "acf":      step = { acf.push($0) }
-default:         fail("error: --method must be 'acf', 'cycle', or 'interval'")
+case "cycle":    step = { s, _, _, _ in cyc.push(s) }
+case "interval": step = { s, _, _, _ in itv.push(s) }
+case "acf":      step = { s, _, _, _ in acf.push(s) }
+case "fused":    step = { s, p, g, v in fus.push(surge: s, pitch: p, gravityZ: g, speed: v) }
+default:         fail("error: --method must be 'acf', 'cycle', 'interval', or 'fused'")
 }
 
 let csv: WobbleCSV
@@ -61,6 +67,11 @@ do {
 
 guard csv.hasColumn("surge_g") else {
     fail("error: file has no surge_g column (need a recording that logs surge)")
+}
+if method == "fused" {
+    for name in ["pitch_rad", "gravity_z_g", "speed_mps"] where !csv.hasColumn(name) {
+        fail("error: --method fused needs a \(name) column")
+    }
 }
 
 let binSeconds = stringArg("--bin").flatMap(Double.init) ?? 15.0
@@ -84,7 +95,7 @@ for row in csv.rows {
     let speed = csv.double(row, "speed_mps") ?? 0
     let course = csv.double(row, "course_deg") ?? -1
     let orig = csv.double(row, "stroke_rate_spm") ?? 0
-    let new = step(surge)
+    let new = step(surge, csv.double(row, "pitch_rad") ?? 0, csv.double(row, "gravity_z_g") ?? 0, speed)
     let newRounded = (new * 10).rounded() / 10  // app logs stroke rate at %.1f
 
     smoothWindow.append(surge)
@@ -144,7 +155,9 @@ if let outputPath {
 let pct = { (x: Int) in String(format: "%.1f%%", 100.0 * Double(x) / Double(total)) }
 var summary = ""
 summary += "method:                   \(method)\n"
-if method == "cycle" {
+if method == "fused" {
+    summary += String(format: "spectrum window:          %.0f s\n", fusedParams.windowSeconds)
+} else if method == "cycle" {
     summary += "smoothing window:         \(cycleParams.smoothingWindow) sample(s)\n"
     summary += String(format: "count window:             %.0f s\n", cycleParams.windowSeconds)
     summary += String(format: "threshold fraction:       %.2f\n", cycleParams.thresholdFraction)

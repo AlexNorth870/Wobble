@@ -108,6 +108,70 @@ final class GoldenTest: XCTestCase {
         XCTAssertGreaterThan(distinct, 20, "interval rate should be continuous, not quantized")
     }
 
+    /// Tracks 42 and 46 were both hand-counted at a steady 22 spm. Their surge
+    /// has two bumps per stroke for long stretches, so surge-based detectors
+    /// reported up to ~46 spm. The fused detector must never report that double.
+    func testFusedMatchesHandCount_track42() throws {
+        let rates = try fusedRates(fixture: "track42")
+        let mean = rates.reduce(0, +) / Double(rates.count)
+        print(String(format: "fused track42: mean=%.1f min=%.1f max=%.1f spm", mean, rates.min()!, rates.max()!))
+        XCTAssertEqual(mean, 22, accuracy: 1, "expected the hand-counted 22 spm")
+        XCTAssertEqual(rates.min()!, 22, accuracy: 2)
+        XCTAssertEqual(rates.max()!, 22, accuracy: 2, "fused rate must not jump to the doubled surge rate")
+    }
+
+    func testFusedHasNoDoubledRate_track46() throws {
+        let rates = try fusedRates(fixture: "track46")
+        let mean = rates.reduce(0, +) / Double(rates.count)
+        print(String(format: "fused track46: mean=%.1f min=%.1f max=%.1f spm", mean, rates.min()!, rates.max()!))
+        XCTAssertEqual(mean, 22, accuracy: 3, "expected ~22 spm (GPS speed shows ~19 early, ~24 late)")
+        XCTAssertLessThan(rates.max()!, 27, "fused rate must not jump to the doubled surge rate")
+        XCTAssertGreaterThan(rates.min()!, 16)
+    }
+
+    /// File 2 sits at the dock (speed ~0, phone handled) until ~45 s, then rows
+    /// at the hand-counted 22 spm over 45–75 s. The fused detector must report 0
+    /// at rest and must not average the rest into the piece that follows.
+    func testFusedRestThenRow_file2() throws {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "sample2", withExtension: "csv"))
+        let csv = try WobbleCSV(contentsOf: url)
+        var fused = FusedAnalyzer()
+        var atRest: [Double] = []
+        var piece: [Double] = []
+        for row in csv.rows {
+            guard let surge = csv.double(row, "surge_g"),
+                  let t = csv.double(row, "stopwatch_time_s") else { continue }
+            let r = fused.push(surge: surge,
+                               pitch: csv.double(row, "pitch_rad") ?? 0,
+                               gravityZ: csv.double(row, "gravity_z_g") ?? 0,
+                               speed: csv.double(row, "speed_mps") ?? 0)
+            if t < 40 { atRest.append(r) }
+            if t >= 45, t <= 75, r > 0 { piece.append(r) }
+        }
+        let mean = piece.reduce(0, +) / Double(piece.count)
+        print(String(format: "fused file2: rest max=%.1f, t=45..75 mean=%.1f spm", atRest.max() ?? 0, mean))
+        XCTAssertEqual(atRest.max() ?? 0, 0, "boat at rest should report no stroke rate")
+        XCTAssertEqual(mean, 22, accuracy: 2, "expected the hand-counted 22 spm")
+    }
+
+    /// Non-zero fused rates for every row of a fixture.
+    private func fusedRates(fixture: String) throws -> [Double] {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: fixture, withExtension: "csv"))
+        let csv = try WobbleCSV(contentsOf: url)
+        var fused = FusedAnalyzer()
+        var rates: [Double] = []
+        for row in csv.rows {
+            guard let surge = csv.double(row, "surge_g") else { continue }
+            let r = fused.push(surge: surge,
+                               pitch: csv.double(row, "pitch_rad") ?? 0,
+                               gravityZ: csv.double(row, "gravity_z_g") ?? 0,
+                               speed: csv.double(row, "speed_mps") ?? 0)
+            if r > 0 { rates.append(r) }
+        }
+        XCTAssertFalse(rates.isEmpty)
+        return rates
+    }
+
     /// Count surge cycles over a stopwatch window of a fixture, using the same
     /// last-10 smoothing + hysteresis as the streaming detector.
     private func cycleRate(fixture: String, from t0: Double, to t1: Double,

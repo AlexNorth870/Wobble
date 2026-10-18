@@ -23,6 +23,8 @@ let package = Package(
             resources: [
                 .copy("Fixtures/sample.csv"),
                 .copy("Fixtures/sample2.csv"),
+                .copy("Fixtures/track42.csv"),
+                .copy("Fixtures/track46.csv"),
             ]
         ),
     ]

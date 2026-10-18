@@ -274,6 +274,171 @@ public struct IntervalAnalyzer {
     }
 }
 
+// MARK: - Fused spectral detector
+
+/// Parameters for the fused detector. It finds the dominant stroke rhythm in a
+/// trailing window of pitch, gravity-z and GPS speed (each of which moves once per
+/// stroke), rather than timing surge onsets: surge often has two bumps per stroke
+/// (catch and drive), which makes surge-based detectors report double the rate.
+public struct FusedParams: Sendable {
+    public var sampleInterval = 0.1
+    /// Trailing window (s) whose spectrum is analysed.
+    public var windowSeconds = 15.0
+    /// Require this many seconds of data before reporting a rate.
+    public var minSeconds = 10.0
+    /// Recompute the spectrum every this many samples (10 = once a second).
+    public var updateEverySamples = 10
+    /// Stroke-rate search range and resolution (spm).
+    public var minSPM = 12.0
+    public var maxSPM = 60.0
+    public var gridStepSPM = 0.5
+    /// GPS speed updates at 1 Hz, so it cannot resolve rates above ~30 spm.
+    public var maxSpeedSPM = 29.0
+    /// Octave check: if the combined power at half the peak rate is at least this
+    /// fraction of the peak, the peak is a second harmonic and half is reported.
+    public var halfRatio = 0.3
+    /// How far (spm) either side of exactly half the peak to look for that power.
+    public var halfToleranceSPM = 1.0
+    /// Idle gate: trailing moving average of surge, and the RMS of that smoothed
+    /// surge over the last `idleSeconds` below which the boat is at rest (report 0).
+    public var surgeSmoothingWindow = 10
+    public var idleSeconds = 6.0
+    public var minSurgeRMS = 0.005
+    /// Mean GPS speed (m/s) over the last `idleSeconds` below which the boat is at
+    /// rest. Handling the phone at the dock moves surge but not the boat.
+    public var minSpeed = 0.5
+
+    public init() {}
+}
+
+/// Dominant stroke rate (spm) in windows of pitch, gravity-z and speed sampled
+/// at `params.sampleInterval`. Each signal's power spectrum over the search grid
+/// is normalized to sum to 1 so they vote equally, then the votes are summed.
+/// Returns 0 when the signals are flat.
+public func fusedStrokeRate(pitch: [Double], gravityZ: [Double], speed: [Double],
+                            params: FusedParams = FusedParams()) -> Double {
+    let grid = Array(stride(from: params.minSPM, through: params.maxSPM, by: params.gridStepSPM))
+    var total = [Double](repeating: 0, count: grid.count)
+
+    func addVote(_ signal: [Double], maxSPM: Double) {
+        let n = signal.count
+        guard n >= 2 else { return }
+        // Remove the straight-line trend (slow drift in heading, trim or speed would
+        // otherwise leak into the lowest rates), then apply a Hann taper to reduce
+        // leakage from the window edges into neighbouring rates
+        let tMean = Double(n - 1) / 2
+        let mean = signal.reduce(0, +) / Double(n)
+        var sxy = 0.0, sxx = 0.0
+        for (k, v) in signal.enumerated() {
+            sxy += (Double(k) - tMean) * (v - mean)
+            sxx += (Double(k) - tMean) * (Double(k) - tMean)
+        }
+        let slope = sxy / sxx
+        let x = signal.enumerated().map { k, v in
+            (v - mean - slope * (Double(k) - tMean)) * (0.5 - 0.5 * cos(2 * .pi * Double(k) / Double(n - 1)))
+        }
+        let power = grid.map { spm -> Double in
+            let w = 2 * .pi * spm / 60.0 * params.sampleInterval
+            var re = 0.0, im = 0.0
+            for (k, v) in x.enumerated() {
+                re += v * cos(w * Double(k))
+                im -= v * sin(w * Double(k))
+            }
+            return re * re + im * im
+        }
+        let sum = power.reduce(0, +)
+        guard sum > 0 else { return }
+        for i in grid.indices where grid[i] <= maxSPM {
+            total[i] += power[i] / sum
+        }
+    }
+
+    addVote(pitch, maxSPM: params.maxSPM)
+    addVote(gravityZ, maxSPM: params.maxSPM)
+    addVote(speed, maxSPM: params.maxSpeedSPM)
+
+    // A peak at the bottom of the range is slow drift, not a stroke rhythm
+    guard let peak = total.indices.max(by: { total[$0] < total[$1] }), total[peak] > 0, peak > 0 else { return 0 }
+    var rate = grid[peak]
+
+    // A strong component at half the peak means the peak is the second harmonic
+    let half = rate / 2
+    if half >= params.minSPM {
+        let halfPower = grid.indices
+            .filter { abs(grid[$0] - half) <= params.halfToleranceSPM }
+            .map { total[$0] }
+            .max() ?? 0
+        if halfPower >= params.halfRatio * total[peak] { rate = half }
+    }
+    return rate
+}
+
+/// Streaming wrapper for the fused detector. Push one sample of each signal per
+/// tick; it keeps the trailing window, refreshes the rate once a second and holds
+/// it in between, and reports 0 while warming up or at rest. Coming to rest clears
+/// the window, so the next piece is not averaged with the paddle before it.
+public struct FusedAnalyzer {
+    public let params: FusedParams
+    private var pitch: [Double] = []
+    private var gravityZ: [Double] = []
+    private var speed: [Double] = []
+    private var rawSurge: [Double] = []
+    private var smoothedSurge: [Double] = []
+    private var recentSpeed: [Double] = []
+    private var samples = 0
+    private var rate = 0.0
+
+    private var windowSamples: Int { max(2, Int((params.windowSeconds / params.sampleInterval).rounded())) }
+    private var idleSamples: Int { max(2, Int((params.idleSeconds / params.sampleInterval).rounded())) }
+
+    public init(params: FusedParams = FusedParams()) {
+        self.params = params
+    }
+
+    public mutating func push(surge: Double, pitch p: Double, gravityZ g: Double, speed s: Double) -> Double {
+        samples += 1
+        pitch.append(p); gravityZ.append(g); speed.append(s)
+        if pitch.count > windowSamples {
+            pitch.removeFirst(); gravityZ.removeFirst(); speed.removeFirst()
+        }
+
+        rawSurge.append(surge)
+        if rawSurge.count > params.surgeSmoothingWindow { rawSurge.removeFirst() }
+        smoothedSurge.append(rawSurge.reduce(0, +) / Double(rawSurge.count))
+        if smoothedSurge.count > idleSamples { smoothedSurge.removeFirst() }
+        recentSpeed.append(s)
+        if recentSpeed.count > idleSamples { recentSpeed.removeFirst() }
+
+        let n = Double(smoothedSurge.count)
+        let mean = smoothedSurge.reduce(0, +) / n
+        let rms = (smoothedSurge.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / n).squareRoot()
+        let meanSpeed = recentSpeed.reduce(0, +) / Double(recentSpeed.count)
+
+        // Idle gate: at rest, start the window afresh
+        guard rms > params.minSurgeRMS, meanSpeed > params.minSpeed else {
+            pitch = []; gravityZ = []; speed = []
+            rate = 0
+            return 0
+        }
+        // Warm-up
+        guard Double(pitch.count) * params.sampleInterval >= params.minSeconds else {
+            rate = 0
+            return 0
+        }
+        if rate == 0 || samples % params.updateEverySamples == 0 {
+            rate = fusedStrokeRate(pitch: pitch, gravityZ: gravityZ, speed: speed, params: params)
+        }
+        return rate
+    }
+
+    public mutating func reset() {
+        pitch = []; gravityZ = []; speed = []
+        rawSurge = []; smoothedSurge = []; recentSpeed = []
+        samples = 0
+        rate = 0
+    }
+}
+
 // MARK: - Autocorrelation detector
 
 public struct StrokeAnalyzer {

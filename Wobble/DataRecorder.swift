@@ -76,26 +76,35 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var rotationMagnitudeBuffer: [Double] = []   // |roll rate| about the travel direction (rad/s)
     private var lastCourseAxis: (x: Double, y: Double)?  // GPS travel direction for the wobble roll axis
     private let wobbleBufferSize = 100
-    // Stroke rate via interval timing of forward (surge) acceleration: detect
-    // stroke onsets and report 60 / (mean recent inter-onset interval).
+    // Stroke rate via the dominant rhythm of pitch, gravity-z and GPS speed over a
+    // trailing window (each moves once per stroke). Surge is only used for the idle
+    // gate: it often has two bumps per stroke, which doubled the reported rate.
+    // Mirrors ReplayTools `FusedAnalyzer`; keep the two in step.
     private var rawSurgeBuffer: [Double] = []                         // recent raw surge, for smoothing
-    private var smoothedSurgeBuffer: [Double] = []                    // trailing window of smoothed surge (for mean/RMS)
-    private var strokeHigh = false                                    // hysteresis state (above/below threshold)
-    private var strokeOnsetTimes: [Double] = []                      // times (s) of recent detected stroke onsets
-    private var strokeSamples = 0                                     // sample counter, drives the internal clock
-    private var strokeSmoothedRate = 0.0                             // EMA-smoothed output rate (spm)
+    private var smoothedSurgeBuffer: [Double] = []                    // trailing window of smoothed surge (idle gate RMS)
+    private var strokePitchBuffer: [Double] = []                      // trailing window of pitch (rad)
+    private var strokeGravityZBuffer: [Double] = []                   // trailing window of gravity z (g)
+    private var strokeSpeedBuffer: [Double] = []                      // trailing window of GPS speed (m/s)
+    private var strokeIdleSpeedBuffer: [Double] = []                  // last 6 s of GPS speed, for the idle gate
+    private var strokeSamples = 0                                     // sample counter, paces the spectrum refresh
+    private var strokeCurrentRate = 0.0                               // rate held between refreshes (spm)
     private var horizontalAccelBuffer: [(x: Double, y: Double)] = []  // world-horizontal accel, for the fallback axis
     private var lastForwardAxis: (x: Double, y: Double)?              // last known travel direction (world frame)
     private var axisSource: String = "none"                          // debug: which axis produced the last surge (A/B/held/none)
     private let axisBufferSize = 100      // 10 s of world-horizontal accel for the PCA fallback axis
     private let strokeSmoothingWindow = 10 // trailing surge moving average (~1 s) to cut jitter
-    private let strokeWindowSize = 120     // 12 s at 0.1 s: window for the mean/RMS that sets the threshold
-    private let strokeThresholdFraction = 0.3 // onset threshold as a fraction of window RMS
+    private let strokeIdleWindowSize = 60  // 6 s at 0.1 s: smoothed-surge window for the idle gate
     private let strokeMinRMS = 0.005      // below this surge RMS the boat is treated as at rest (report 0)
-    private let strokesToAverage = 3      // average the interval over this many recent strokes
-    private let strokeMaxGapSeconds = 6.0 // no onset within this long -> report 0 (~10 spm floor)
-    private let strokeMinSeconds = 3.0    // require this much data before reporting a rate
-    private let strokeOutputSmoothing = 0.1 // EMA factor on the output rate (~1 s settling at 10 Hz)
+    private let strokeMinSpeed = 0.5      // m/s: below this mean speed the boat is at rest (phone handled at the dock)
+    private let strokeWindowSize = 150     // 15 s at 0.1 s: window whose spectrum is analysed
+    private let strokeMinSamples = 100     // 10 s of data before reporting a rate
+    private let strokeUpdateEvery = 10     // refresh the spectrum once a second
+    private let strokeMinSPM = 12.0       // stroke-rate search range and resolution (spm)
+    private let strokeMaxSPM = 60.0
+    private let strokeGridStepSPM = 0.5
+    private let strokeMaxSpeedSPM = 29.0  // 1 Hz GPS speed can't resolve faster rates
+    private let strokeHalfRatio = 0.3     // power at half the peak >= this fraction -> peak is a harmonic
+    private let strokeHalfToleranceSPM = 1.0
     private let minCourseSpeed = 0.5      // m/s below which GPS course is unreliable (use fallback axis)
     private let pcaMinSamples = 20        // ~2 s of data before trusting the fallback (PCA) axis
     private let minSurgeVariance = 0.0025 // min horizontal accel variance (g^2) for a trustworthy fallback axis
@@ -160,10 +169,12 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         rotationMagnitudeBuffer = []
         rawSurgeBuffer = []
         smoothedSurgeBuffer = []
-        strokeHigh = false
-        strokeOnsetTimes = []
+        strokePitchBuffer = []
+        strokeGravityZBuffer = []
+        strokeSpeedBuffer = []
+        strokeIdleSpeedBuffer = []
         strokeSamples = 0
-        strokeSmoothedRate = 0
+        strokeCurrentRate = 0
         horizontalAccelBuffer = []
         lastForwardAxis = nil
         lastCourseAxis = nil
@@ -238,10 +249,12 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         rotationMagnitudeBuffer = []
         rawSurgeBuffer = []
         smoothedSurgeBuffer = []
-        strokeHigh = false
-        strokeOnsetTimes = []
+        strokePitchBuffer = []
+        strokeGravityZBuffer = []
+        strokeSpeedBuffer = []
+        strokeIdleSpeedBuffer = []
         strokeSamples = 0
-        strokeSmoothedRate = 0
+        strokeCurrentRate = 0
         horizontalAccelBuffer = []
         lastForwardAxis = nil
         lastCourseAxis = nil
@@ -301,7 +314,7 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         let sampleDistance = speed * 0.1
         distanceTravelled += sampleDistance
 
-        // Stroke rate via cycle counting of forward (surge) acceleration.
+        // Surge (forward acceleration), for the stroke-rate idle gate and the log.
         // Project world-horizontal acceleration onto the travel direction so only
         // fore-aft surge is used; vertical bob and lateral movement project to ~0.
         horizontalAccelBuffer.append((x: worldAccelX, y: worldAccelY))
@@ -315,16 +328,28 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         } else {
             surge = 0
         }
-        // Smooth surge with a trailing moving average, then keep a 12 s window of
-        // smoothed surge for the cycle-counting stroke detector.
+        // Smooth surge with a trailing moving average and keep 6 s of it for the
+        // idle gate; keep 15 s of pitch, gravity z and speed for the stroke rhythm.
         rawSurgeBuffer.append(surge)
         if rawSurgeBuffer.count > strokeSmoothingWindow {
             rawSurgeBuffer.removeFirst()
         }
         let smoothedSurge = rawSurgeBuffer.reduce(0, +) / Double(rawSurgeBuffer.count)
         smoothedSurgeBuffer.append(smoothedSurge)
-        if smoothedSurgeBuffer.count > strokeWindowSize {
+        if smoothedSurgeBuffer.count > strokeIdleWindowSize {
             smoothedSurgeBuffer.removeFirst()
+        }
+        strokePitchBuffer.append(pitch)
+        strokeGravityZBuffer.append(gravZ)
+        strokeSpeedBuffer.append(speed)
+        strokeIdleSpeedBuffer.append(speed)
+        if strokeIdleSpeedBuffer.count > strokeIdleWindowSize {
+            strokeIdleSpeedBuffer.removeFirst()
+        }
+        if strokePitchBuffer.count > strokeWindowSize {
+            strokePitchBuffer.removeFirst()
+            strokeGravityZBuffer.removeFirst()
+            strokeSpeedBuffer.removeFirst()
         }
         let currentStrokeRate = computeStrokeRate()
         DispatchQueue.main.async { self.strokeRate = currentStrokeRate }
@@ -467,58 +492,95 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     // MARK: - Stroke Rate
 
-    // Time the gaps between recent stroke onsets and report 60 / (mean interval).
-    // Continuous (unlike counting cycles in a fixed window, which quantizes the
-    // rate) and robust to a varying rate (unlike autocorrelation). Onsets are
-    // detected by hysteresis on the smoothed surge; the output filtered.
+    // Find the dominant stroke rhythm in the last 15 s of pitch, gravity z and GPS
+    // speed, refreshed once a second. Matches ReplayTools `FusedAnalyzer`.
     private func computeStrokeRate() -> Double {
-        let now = Double(strokeSamples) * 0.1
         strokeSamples += 1
 
-        let n = smoothedSurgeBuffer.count
-        guard n >= 1, let current = smoothedSurgeBuffer.last else { return emitStrokeRate(0) }
+        // Idle gate on smoothed surge and GPS speed over the last 6 s
+        let n = Double(smoothedSurgeBuffer.count)
+        guard n >= 1, !strokeIdleSpeedBuffer.isEmpty else { return 0 }
+        let mean = smoothedSurgeBuffer.reduce(0, +) / n
+        let rms = sqrt(smoothedSurgeBuffer.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / n)
+        let meanSpeed = strokeIdleSpeedBuffer.reduce(0, +) / Double(strokeIdleSpeedBuffer.count)
 
-        // Mean/RMS over the trailing window set the onset threshold
-        let mean = smoothedSurgeBuffer.reduce(0, +) / Double(n)
-        let rms = sqrt(smoothedSurgeBuffer.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(n))
-
-        // Warm-up and idle gate
-        guard now + 0.1 >= strokeMinSeconds, rms > strokeMinRMS else { return emitStrokeRate(0) }
-
-        // Hysteresis onset detection: rising above +threshold after dropping below
-        // -threshold marks a stroke. The threshold scales with RMS so weak-but-real
-        // strokes are caught while small jitter is rejected.
-        let centered = current - mean
-        let threshold = strokeThresholdFraction * rms
-        if !strokeHigh, centered > threshold {
-            strokeHigh = true
-            strokeOnsetTimes.append(now)
-            if strokeOnsetTimes.count > strokesToAverage + 1 { strokeOnsetTimes.removeFirst() }
-        } else if strokeHigh, centered < -threshold {
-            strokeHigh = false
+        // At rest: start the window afresh so the next piece isn't averaged with the paddle before it
+        guard rms > strokeMinRMS, meanSpeed > strokeMinSpeed else {
+            strokePitchBuffer = []
+            strokeGravityZBuffer = []
+            strokeSpeedBuffer = []
+            strokeCurrentRate = 0
+            return 0
         }
-
-        guard let last = strokeOnsetTimes.last, strokeOnsetTimes.count >= 2 else { return emitStrokeRate(0) }
-        // No stroke for too long -> treat as stopped
-        if now - last > strokeMaxGapSeconds { return emitStrokeRate(0) }
-
-        let intervals = zip(strokeOnsetTimes.dropFirst(), strokeOnsetTimes).map { $0 - $1 }
-        let avg = intervals.reduce(0, +) / Double(intervals.count)
-        guard avg > 0 else { return emitStrokeRate(0) }
-        return emitStrokeRate(60.0 / avg)
+        // Warm-up
+        guard strokePitchBuffer.count >= strokeMinSamples else {
+            strokeCurrentRate = 0
+            return 0
+        }
+        if strokeCurrentRate == 0 || strokeSamples % strokeUpdateEvery == 0 {
+            strokeCurrentRate = fusedStrokeRate()
+        }
+        return strokeCurrentRate
     }
 
-    // Exponential smoothing of the output rate. A zero (idle/stopped) resets the
-    // smoother so the number drops promptly instead of decaying.
-    private func emitStrokeRate(_ raw: Double) -> Double {
-        if raw <= 0 {
-            strokeSmoothedRate = 0
-        } else if strokeSmoothedRate <= 0 {
-            strokeSmoothedRate = raw   // seed on first stroke to avoid a slow ramp from 0
-        } else {
-            strokeSmoothedRate = strokeOutputSmoothing * raw + (1 - strokeOutputSmoothing) * strokeSmoothedRate
+    // Each signal's power spectrum over the stroke-rate grid is normalized to sum
+    // to 1 so they vote equally; the peak of the summed votes is the stroke rate.
+    // Surge is left out because its two bumps per stroke vote for double the rate.
+    private func fusedStrokeRate() -> Double {
+        let grid = Array(stride(from: strokeMinSPM, through: strokeMaxSPM, by: strokeGridStepSPM))
+        var total = [Double](repeating: 0, count: grid.count)
+
+        func addVote(_ signal: [Double], maxSPM: Double) {
+            let n = signal.count
+            guard n >= 2 else { return }
+            // Remove the straight-line trend (slow drift in heading, trim or speed would
+            // otherwise leak into the lowest rates), then apply a Hann taper to reduce
+            // leakage from the window edges into neighbouring rates
+            let tMean = Double(n - 1) / 2
+            let mean = signal.reduce(0, +) / Double(n)
+            var sxy = 0.0, sxx = 0.0
+            for (k, v) in signal.enumerated() {
+                sxy += (Double(k) - tMean) * (v - mean)
+                sxx += (Double(k) - tMean) * (Double(k) - tMean)
+            }
+            let slope = sxy / sxx
+            let x = signal.enumerated().map { k, v in
+                (v - mean - slope * (Double(k) - tMean)) * (0.5 - 0.5 * cos(2 * .pi * Double(k) / Double(n - 1)))
+            }
+            let power = grid.map { spm -> Double in
+                let w = 2 * .pi * spm / 60.0 * 0.1
+                var re = 0.0, im = 0.0
+                for (k, v) in x.enumerated() {
+                    re += v * cos(w * Double(k))
+                    im -= v * sin(w * Double(k))
+                }
+                return re * re + im * im
+            }
+            let sum = power.reduce(0, +)
+            guard sum > 0 else { return }
+            for i in grid.indices where grid[i] <= maxSPM {
+                total[i] += power[i] / sum
+            }
         }
-        return strokeSmoothedRate
+
+        addVote(strokePitchBuffer, maxSPM: strokeMaxSPM)
+        addVote(strokeGravityZBuffer, maxSPM: strokeMaxSPM)
+        addVote(strokeSpeedBuffer, maxSPM: strokeMaxSpeedSPM)
+
+        // A peak at the bottom of the range is slow drift, not a stroke rhythm
+        guard let peak = total.indices.max(by: { total[$0] < total[$1] }), total[peak] > 0, peak > 0 else { return 0 }
+        var rate = grid[peak]
+
+        // A strong component at half the peak means the peak is the second harmonic
+        let half = rate / 2
+        if half >= strokeMinSPM {
+            let halfPower = grid.indices
+                .filter { abs(grid[$0] - half) <= strokeHalfToleranceSPM }
+                .map { total[$0] }
+                .max() ?? 0
+            if halfPower >= strokeHalfRatio * total[peak] { rate = half }
+        }
+        return rate
     }
 
     // Horizontal travel direction in the world frame (X = true north, Y = west).

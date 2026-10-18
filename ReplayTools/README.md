@@ -72,9 +72,12 @@ filters and hidden rows are kept; pivot caches on the sheet are widened and refr
 
 ## Reprocess a recording with the current algorithms
 
-`scripts/reprocess.py` recomputes `stroke_rate_spm` with the app's interval-timing
-detector (the Swift `IntervalAnalyzer`, built and run automatically) and adds the
-roll columns if they are missing.
+`scripts/reprocess.py` recomputes `stroke_rate_spm` with the app's fused detector
+(the Swift `FusedAnalyzer`, built and run automatically) and adds the roll columns
+if they are missing. The fused detector finds the dominant rhythm of pitch, gravity z
+and GPS speed over a 15 s window; surge is not used for the rate because it often
+has two bumps per stroke, which made the older detectors report double. It is also
+available as `wobble-replay <file.csv> --method fused`.
 
     python3 scripts/reprocess.py wobble_2026-10-04_Full_combined.xlsx
 
