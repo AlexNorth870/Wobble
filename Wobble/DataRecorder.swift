@@ -297,13 +297,12 @@ class DataRecorder: NSObject, ObservableObject, CLLocationManagerDelegate {
             gx    = motion.rotationRate.x
             gy    = motion.rotationRate.y
             gz    = motion.rotationRate.z
-            // Rotate device-frame user acceleration into the world frame
+            // Rotate device-frame user acceleration and rotation rate into the world
+            // frame. CMRotationMatrix maps world -> device, so device -> world uses
+            // its transpose (column-wise products below).
             let m = motion.attitude.rotationMatrix
-            worldAccelX = m.m11 * ax + m.m12 * ay + m.m13 * az
-            worldAccelY = m.m21 * ax + m.m22 * ay + m.m23 * az
-            // CMRotationMatrix maps world -> device, so device -> world uses its
-            // transpose. (The acceleration lines above use the matrix itself; the
-            // stroke detector is tuned on that signal, so it is left unchanged.)
+            worldAccelX = m.m11 * ax + m.m21 * ay + m.m31 * az
+            worldAccelY = m.m12 * ax + m.m22 * ay + m.m32 * az
             worldRotX = m.m11 * gx + m.m21 * gy + m.m31 * gz
             worldRotY = m.m12 * gx + m.m22 * gy + m.m32 * gz
         }

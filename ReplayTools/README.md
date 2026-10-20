@@ -73,16 +73,19 @@ filters and hidden rows are kept; pivot caches on the sheet are widened and refr
 ## Reprocess a recording with the current algorithms
 
 `scripts/reprocess.py` recomputes `stroke_rate_spm` with the app's fused detector
-(the Swift `FusedAnalyzer`, built and run automatically) and adds the roll columns
-if they are missing. The fused detector finds the dominant rhythm of pitch, gravity z
-and GPS speed over a 15 s window; surge is not used for the rate because it often
-has two bumps per stroke, which made the older detectors report double. It is also
-available as `wobble-replay <file.csv> --method fused`.
+(the Swift `FusedAnalyzer`, built and run automatically) and `surge_g`, and adds the
+roll columns if they are missing. The fused detector finds the dominant rhythm of
+pitch, gravity z and GPS speed over a 15 s window. Surge is not used for the rate:
+a single stroke's surge is noisy and lopsided (broad deceleration, short sharp push),
+so detectors timing its onsets often counted a stroke twice. It is also available
+as `wobble-replay <file.csv> --method fused`.
 
     python3 scripts/reprocess.py wobble_2026-10-04_Full_combined.xlsx
 
-Writes `<name>_reprocessed.xlsx` / `.csv`; the input is never modified. Recordings
-from before `surge_g` was logged get surge rebuilt from the logged orientation and
-acceleration using the app's own projection (checked to match logged `surge_g` on
-every row where both exist). Recordings made with the current app reproduce their
-logged stroke rate exactly.
+Writes `<name>_reprocessed.xlsx` / `.csv`; the input is never modified. Surge is
+always rebuilt from the logged orientation and user acceleration with the app's
+projection, never taken from the file: until October 2026 the app rotated
+acceleration with CMRotationMatrix itself instead of its transpose, so logged
+`surge_g` mixed in vertical motion (gravity came out ~40° from straight down).
+Recordings from June 2026 and earlier used an arbitrary yaw reference, so their
+surge is not truly fore-aft either way.

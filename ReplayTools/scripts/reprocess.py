@@ -5,13 +5,17 @@
                         of pitch, gravity z and GPS speed; ReplayTools
                         `FusedAnalyzer`, run via the Swift CLI so it is the same
                         code as the replay harness).
+  * surge_g          -> recomputed from the logged orientation + user acceleration
+                        (the fused detector uses it only for its idle gate).
   * wobble_roll_deg, roll_rate_deg_s -> added if missing (see add_roll_wobble.py).
 
-Recordings made before surge_g was logged get surge rebuilt from the logged
-orientation + user acceleration, using the app's own projection (GPS course,
-else the principal axis of recent horizontal acceleration, else the last axis).
-The app's world-frame step uses CMRotationMatrix un-transposed, and the detector
-is tuned on that signal, so the rebuild deliberately reproduces it.
+Surge is always recomputed, never taken from the file: until October 2026 the app
+rotated acceleration into the world frame with CMRotationMatrix itself (world ->
+device) instead of its transpose, so logged surge_g mixed in vertical motion. The
+projection matches the app's (GPS course, else the principal axis of recent
+horizontal acceleration, else the last axis). Recordings from before the app used
+a true-north reference (June 2026 and earlier) have an arbitrary yaw, so their
+surge is not truly fore-aft either way.
 
 Works on an app CSV (-> <name>_reprocessed.csv) or a combined Excel workbook
 (-> <name>_reprocessed.xlsx; charts, pivot tables, sorts and filters are kept and
@@ -45,30 +49,13 @@ SURGE_COLS = ["pitch_rad", "roll_rad", "yaw_rad", "user_accel_x_g", "user_accel_
 
 # MARK: - Surge (as the app computes it)
 
-def app_world_accel(pitch, roll_, yaw, ax, ay, az):
-    """The app's 'world' acceleration: CMRotationMatrix (world->device) applied to
-    the device vector, i.e. R^T·a with R = Rz(yaw)·Rx(pitch)·Ry(roll)."""
-    cp, sp = math.cos(pitch), math.sin(pitch)
-    cr, sr = math.cos(roll_), math.sin(roll_)
-    cy, sy = math.cos(yaw), math.sin(yaw)
-    # Rz(yaw)^T
-    x1 = cy * ax + sy * ay
-    y1 = -sy * ax + cy * ay
-    z1 = az
-    # Rx(pitch)^T
-    x2 = x1
-    y2 = cp * y1 + sp * z1
-    z2 = -sp * y1 + cp * z1
-    # Ry(roll)^T
-    return cr * x2 - sr * z2, y2
-
-
 def rebuild_surge(rows):
     """rows: dicts for one session in stopwatch order -> surge_g per row."""
     buf, last, out = [], None, []
     for r in rows:
-        wx, wy = app_world_accel(r["pitch_rad"], r["roll_rad"], r["yaw_rad"],
-                                 r["user_accel_x_g"], r["user_accel_y_g"], r["user_accel_z_g"])
+        # Same device -> world rotation the wobble roll columns use
+        wx, wy = roll.world_rotation(r["pitch_rad"], r["roll_rad"], r["yaw_rad"],
+                                     r["user_accel_x_g"], r["user_accel_y_g"], r["user_accel_z_g"])
         buf.append((wx, wy))
         if len(buf) > AXIS_BUFFER:
             buf.pop(0)
@@ -121,13 +108,13 @@ def fused_rates(binary, data, surges, tmp):
 # MARK: - Processing
 
 def compute(header, rows):
-    """Returns (stroke rates per row, {roll column: values} for roll columns not yet present)."""
+    """Returns (stroke rates per row, surge per row, {roll column: values} for roll
+    columns not yet present)."""
     ix = {name: i for i, name in enumerate(header)}
     missing = [c for c in SURGE_COLS + ["gravity_z_g", "stopwatch_time_s", "stroke_rate_spm"] if c not in ix]
     if missing:
         sys.exit(f"error: missing columns: {', '.join(missing)}")
     key_cols = ["source_file"] if "source_file" in ix else [c for c in ("user_uuid", "track") if c in ix]
-    has_surge = "surge_g" in ix
 
     sessions = defaultdict(list)
     for i, row in enumerate(rows):
@@ -135,50 +122,40 @@ def compute(header, rows):
             parsed = {c: float(row[ix[c]]) for c in SURGE_COLS + ["gravity_z_g", "stopwatch_time_s"]}
         except (TypeError, ValueError, IndexError):
             continue
-        logged = row[ix["surge_g"]] if has_surge else None
-        parsed["surge_g"] = float(logged) if logged not in (None, "") else None
         sessions[tuple(row[ix[c]] for c in key_cols)].append((i, parsed))
 
     binary = replay_binary()
     rates = [None] * len(rows)
-    rebuilt_sessions, checked, matched = 0, 0, 0
+    surge = [None] * len(rows)
     with tempfile.TemporaryDirectory() as tmp:
         for members in sessions.values():
             members.sort(key=lambda m: m[1]["stopwatch_time_s"])
             data = [m[1] for m in members]
-            rebuilt = rebuild_surge(data)
-            if all(d["surge_g"] is not None for d in data):
-                surges = [d["surge_g"] for d in data]
-                for a, b in zip(surges, rebuilt):
-                    checked += 1
-                    matched += abs(a - b) < 1e-4
-            else:
-                surges = rebuilt
-                rebuilt_sessions += 1
-            for (i, _), rate in zip(members, fused_rates(binary, data, surges, tmp)):
+            surges = rebuild_surge(data)
+            for (i, _), s, rate in zip(members, surges, fused_rates(binary, data, surges, tmp)):
+                surge[i] = round(s, 6)  # app logs surge at %.6f
                 rates[i] = rate
 
-    print(f"{len(sessions)} session(s); surge rebuilt for {rebuilt_sessions}", file=sys.stderr)
-    if checked:
-        print(f"surge rebuild check vs logged surge_g: {matched}/{checked} rows match "
-              f"({100 * matched / checked:.1f}%)", file=sys.stderr)
-
-    return rates, roll.compute(header, rows)
+    print(f"{len(sessions)} session(s); surge recomputed for all", file=sys.stderr)
+    return rates, surge, roll.compute(header, rows)
 
 
 def process_csv(src, dst):
     with open(src, newline="") as f:
         data = list(csv.reader(f))
     header, rows = data[0], data[1:]
-    rates, roll_values = compute(header, rows)
-    sr = header.index("stroke_rate_spm")
+    rates, surge, roll_values = compute(header, rows)
+    if "surge_g" not in header:
+        header = header + ["surge_g"]
+    sr, sg = header.index("stroke_rate_spm"), header.index("surge_g")
     with open(dst, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(header + list(roll_values))
         for i, row in enumerate(rows):
-            row = list(row)
+            row = list(row) + [""] * (len(header) - len(row))
             if rates[i] is not None:
                 row[sr] = rates[i]
+                row[sg] = surge[i]
             w.writerow(row + ["" if roll_values[c][i] is None else roll_values[c][i] for c in roll_values])
 
 
@@ -186,38 +163,45 @@ def process_xlsx(src, dst):
     z = zipfile.ZipFile(src)
     name, path, cells = roll.find_data_sheet(z)
     header_row, header, data_rows, rows = roll.table(cells)
-    rates, roll_values = compute(header, rows)
-    rate_by_row = dict(zip(data_rows, rates))
-    sr_l = roll.col_letter(header.index("stroke_rate_spm") + 1)
+    rates, surge, roll_values = compute(header, rows)
+    if "surge_g" not in header:
+        sys.exit("error: workbook has no surge_g column to update")
+    updates = [(roll.col_letter(header.index(c) + 1), dict(zip(data_rows, v)))
+               for c, v in (("stroke_rate_spm", rates), ("surge_g", surge))]
+    sr_l = updates[0][0]
 
-    def set_rate(r, body):
-        rate = rate_by_row.get(r)
-        if rate is None:
-            return body
-        cell = f'<c r="{sr_l}{r}"><v>{rate}</v></c>'
-        body, n = re.subn(rf'<c r="{sr_l}{r}"(?:[^>]*?/>|[^>]*>.*?</c>)', cell, body, count=1, flags=re.S)
+    def set_cell(r, body, letter, value):
+        cell = f'<c r="{letter}{r}"><v>{value}</v></c>'
+        body, n = re.subn(rf'<c r="{letter}{r}"(?:[^>]*?/>|[^>]*>.*?</c>)', cell, body, count=1, flags=re.S)
         if n == 0:  # no existing cell: insert it in column order
             if body.endswith("/>"):
                 return body[:-2].rstrip() + ">" + cell + "</row>"
             after = [c for c in re.finditer(r'<c r="([A-Z]+)\d+"', body)
-                     if roll.col_number(c.group(1)) > roll.col_number(sr_l)]
+                     if roll.col_number(c.group(1)) > roll.col_number(letter)]
             at = after[0].start() if after else len(body) - len("</row>")
             body = body[:at] + cell + body[at:]
+        return body
+
+    def set_values(r, body):
+        for letter, by_row in updates:
+            value = by_row.get(r)
+            if value is not None:
+                body = set_cell(r, body, letter, value)
         return body
 
     parts = {}
     new_cols = [(c, dict(zip(data_rows, v))) for c, v in roll_values.items()]
     xml = roll.append_columns(z.read(path).decode("utf-8"), name, header_row, len(header),
-                              new_cols, z, parts, row_values=set_rate)
+                              new_cols, z, parts, row_values=set_values)
     parts[path] = xml.encode("utf-8")
-    # Stroke rates changed: make pivots built on this sheet refresh on open.
+    # Values changed: make pivots built on this sheet refresh on open.
     for part in z.namelist():
         if part.startswith("xl/pivotCache/pivotCacheDefinition") and part.endswith(".xml"):
             pc = (parts[part] if part in parts else z.read(part)).decode("utf-8")
             if f'sheet="{name}"' in pc and "refreshOnLoad" not in pc:
                 parts[part] = pc.replace("<pivotCacheDefinition ", '<pivotCacheDefinition refreshOnLoad="1" ', 1).encode("utf-8")
     roll.write_zip(z, dst, parts)
-    print(f"sheet '{name}': stroke_rate_spm (column {sr_l}) recomputed"
+    print(f"sheet '{name}': stroke_rate_spm (column {sr_l}) and surge_g (column {updates[1][0]}) recomputed"
           + (f"; added {', '.join(roll_values)}" if roll_values else ""), file=sys.stderr)
 
 
